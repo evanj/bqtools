@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -29,7 +30,8 @@ var cookies = securecookie.New(cookieHashKey, cookieEncryptionKey)
 
 const csrfFormName = "gorilla.csrf.Token"
 
-const cookieName = "state"
+const sessionCookieName = "session"
+const oauthStateName = "state"
 
 var bigQueryOAuthConfig = &oauth2.Config{
 	ClientID:     clientID,
@@ -41,33 +43,42 @@ var bigQueryOAuthConfig = &oauth2.Config{
 
 type session struct {
 	// token is gob serializable
-	Token      *oauth2.Token
-	OAuthState string
+	Token *oauth2.Token
+	// unique id to identify sessions and validate oauth requests
+	Id uint64
+}
+
+// data that is passed in the oauth "state" parameter: permits multiple requests
+// concurrently to "work", e.g. when the token is expired and the user reloads all tabs.
+// It is encrypted and maced just like cookies
+type oauthState struct {
+	// must match the session cookie
+	SessionId   uint64
+	Destination string
 }
 
 func setCookie(w http.ResponseWriter, value *session) error {
-	encoded, err := cookies.Encode(cookieName, value)
+	encoded, err := cookies.Encode(sessionCookieName, value)
 	if err != nil {
 		return err
 	}
 
 	cookie := &http.Cookie{
-		Name:     cookieName,
+		Name:     sessionCookieName,
 		Value:    encoded,
 		Path:     "/",
 		HttpOnly: true,
 	}
 	http.SetCookie(w, cookie)
-	log.Println("set cookie?", encoded)
 	return nil
 }
 
 // Returns the session for this user, or creates a new one and saves it.
 func getOrCreateCookie(w http.ResponseWriter, r *http.Request) (*session, error) {
-	cookie, err := r.Cookie(cookieName)
+	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
 		if err == http.ErrNoCookie {
-			session := &session{nil, makeState()}
+			session := &session{nil, makeNonce()}
 			err := setCookie(w, session)
 			if err != nil {
 				return nil, err
@@ -77,23 +88,26 @@ func getOrCreateCookie(w http.ResponseWriter, r *http.Request) (*session, error)
 		return nil, err
 	}
 
-	session := &session{}
-	err = cookies.Decode(cookieName, cookie.Value, &session)
+	requestSession := &session{}
+	err = cookies.Decode(sessionCookieName, cookie.Value, &requestSession)
 	if err != nil {
 		return nil, err
 	}
-	return session, nil
+	return requestSession, nil
 }
 
-func makeState() string {
-	randomState := make([]byte, 8)
-	_, err := rand.Read(randomState)
-	if err != nil {
-		panic(err)
+func makeNonce() uint64 {
+	nonceInt := uint64(0)
+	for nonceInt == 0 {
+		nonce := make([]byte, 8)
+		_, err := rand.Read(nonce)
+		if err != nil {
+			panic(err)
+		}
+		nonceInt = binary.BigEndian.Uint64(nonce)
 	}
-	stateString := hex.EncodeToString(randomState)
-	fmt.Println("state string", stateString)
-	return stateString
+	log.Printf("nonce 0x%08x", nonceInt)
+	return nonceInt
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +123,21 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 </form></body></html>`, csrfFormName, csrf.Token(r))
 }
 
+func oauthRedirect(w http.ResponseWriter, r *http.Request, requestSession *session, destinationPath string) error {
+	state := &oauthState{requestSession.Id, destinationPath}
+	stateSerialized, err := cookies.Encode(oauthStateName, state)
+	if err != nil {
+		return err
+	}
+	log.Printf("oauth state param = %s", stateSerialized)
+
+	// use "auto" to get no prompt on "refresh"
+	url := bigQueryOAuthConfig.AuthCodeURL(stateSerialized, oauth2.AccessTypeOnline,
+		oauth2.SetAuthURLParam("approval_prompt", "auto"))
+	http.Redirect(w, r, url, http.StatusFound)
+	return nil
+}
+
 func handleOauth2Start(w http.ResponseWriter, r *http.Request) {
 	// Require POST (with CSRF protection) so users must take an explicit action on our site
 	// See http://www.oauthsecurity.com/
@@ -119,12 +148,12 @@ func handleOauth2Start(w http.ResponseWriter, r *http.Request) {
 	log.Print("oauth2 start")
 
 	// cookie the browser then redirect
-	session, err := getOrCreateCookie(w, r)
+	requestSession, err := getOrCreateCookie(w, r)
 	if err != nil {
 		panic(err)
 	}
 
-	http.Redirect(w, r, bigQueryOAuthConfig.AuthCodeURL(session.OAuthState), http.StatusFound)
+	err = oauthRedirect(w, r, requestSession, "/projects")
 }
 
 func handleOauth2Callback(w http.ResponseWriter, r *http.Request) {
@@ -137,16 +166,23 @@ func handleOauth2Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := getOrCreateCookie(w, r)
+	requestSession, err := getOrCreateCookie(w, r)
 	if err != nil {
 		log.Print("invalid cookie?", err.Error())
 		http.Error(w, "Authentication error try again", http.StatusInternalServerError)
 		return
 	}
 
-	state := r.FormValue("state")
-	if state != session.OAuthState {
-		log.Println("state mismatch", state, session.OAuthState)
+	stateSerialized := r.FormValue("state")
+	state := &oauthState{}
+	err = cookies.Decode(oauthStateName, stateSerialized, state)
+	if err != nil {
+		log.Println("state failed to decode", err)
+		http.Error(w, "Authentication error try again", http.StatusInternalServerError)
+		return
+	}
+	if state.SessionId != requestSession.Id {
+		log.Println("mismatched session ids", state.SessionId, requestSession.Id)
 		http.Error(w, "Authentication error try again", http.StatusInternalServerError)
 		return
 	}
@@ -168,21 +204,26 @@ func handleOauth2Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// save the token in the session
-	session.Token = token
-	setCookie(w, session)
-	log.Println("oauth successful")
-	http.Redirect(w, r, "/view", http.StatusFound)
+	requestSession.Token = token
+	setCookie(w, requestSession)
+	log.Println("oauth successful redirecting to", state.Destination)
+	http.Redirect(w, r, state.Destination, http.StatusFound)
 }
 
-func handleView(w http.ResponseWriter, r *http.Request) {
-	session, err := getOrCreateCookie(w, r)
-	if session.Token == nil {
+func listProjects(w http.ResponseWriter, r *http.Request) {
+	requestSession, err := getOrCreateCookie(w, r)
+	if requestSession.Token == nil {
 		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if !requestSession.Token.Valid() {
+		log.Println("detected an invalid token; attempting to re-authenticate")
+		oauthRedirect(w, r, requestSession, "/projects")
 		return
 	}
 
 	ctx := context.Background()
-	oauthClient := bigQueryOAuthConfig.Client(ctx, session.Token)
+	oauthClient := bigQueryOAuthConfig.Client(ctx, requestSession.Token)
 	bq, err := bigquery.New(oauthClient)
 	if err != nil {
 		panic(err)
@@ -199,6 +240,42 @@ func handleView(w http.ResponseWriter, r *http.Request) {
 	for _, project := range result.Projects {
 		fmt.Fprintf(w, "<p>%s %s</p>\n", project.FriendlyName, project.Id)
 	}
+	fmt.Fprintf(w, "wtf %s", requestSession.Token.Expiry.String())
+	fmt.Fprintf(w, "</body></html>")
+}
+
+func handleProject(w http.ResponseWriter, r *http.Request) {
+
+	requestSession, err := getOrCreateCookie(w, r)
+	if requestSession.Token == nil {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if !requestSession.Token.Valid() {
+		log.Println("detected an invalid token; attempting to re-authenticate")
+		oauthRedirect(w, r, requestSession, "/projects")
+		return
+	}
+
+	ctx := context.Background()
+	oauthClient := bigQueryOAuthConfig.Client(ctx, requestSession.Token)
+	bq, err := bigquery.New(oauthClient)
+	if err != nil {
+		panic(err)
+	}
+	result, err := bq.Projects.List().Do()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Fprintf(w, "<html><body>")
+	if result.NextPageToken != "" {
+		panic("next page token")
+	}
+	for _, project := range result.Projects {
+		fmt.Fprintf(w, "<p>%s %s</p>\n", project.FriendlyName, project.Id)
+	}
+	fmt.Fprintf(w, "wtf %s", requestSession.Token.Expiry.String())
 	fmt.Fprintf(w, "</body></html>")
 }
 
@@ -210,11 +287,18 @@ func mustDecodeHex(hexString string) []byte {
 	return out
 }
 
+// Creates a
+func loggedInHandler(fn http.HandleFunc) http.HandleFunc {
+  w http.ResponseWriter, r *http.Request
+
+}
+
 func main() {
 	http.HandleFunc("/", handleRoot)
 	http.HandleFunc("/oauth2start", handleOauth2Start)
 	http.HandleFunc("/oauth2callback", handleOauth2Callback)
-	http.HandleFunc("/view", handleView)
+	http.HandleFunc("/projects", listProjects)
+	http.HandleFunc("/project/", handleProject)
 
 	const hostport = "localhost:8080"
 	fmt.Printf("listening on http://%s/\n", hostport)
