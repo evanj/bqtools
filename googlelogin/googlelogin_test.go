@@ -7,53 +7,47 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
 
 	"github.com/gorilla/securecookie"
 )
 
-// func TestSessionStoreInvalid(t *testing.T) {
-// 	hashKey := make([]byte, cookieHashKeyLength)
-// 	encryptionKey := make([]byte, cookieEncryptionKeyLength)
-// 	sessions := newSessionStore(hashKey, encryptionKey)
+type harness struct {
+	securecookies *securecookie.SecureCookie
+	auth          *Authenticator
+}
 
-// 	sessionRequest := func(c *http.Cookie) (*httptest.ResponseRecorder, *session) {
-// 		w := httptest.NewRecorder()
-// 		r := httptest.NewRequest("GET", "/start", nil)
-// 		if c != nil {
-// 			r.AddCookie(c)
-// 		}
-// 		return w, sessions.get(w, r)
-// 	}
+func (h *harness) sessionFromResponse(w *httptest.ResponseRecorder) *authState {
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		panic("invalid cookies")
+	}
+	session := &authState{}
+	err := h.auth.securecookies.Decode(cookies[0].Name, cookies[0].Value, session)
+	if err != nil {
+		panic(err)
+	}
+	return session
+}
 
-// 	w, session := sessionRequest(nil)
-// 	if !(session.Token == nil && session.Destination == "") {
-// 		t.Error(session)
-// 	}
-// 	if w.Header().Get("Set-Cookie") != "" {
-// 		t.Error(w.Header().Get("Set-Cookie"))
-// 	}
-
-// 	w, session = sessionRequest(&http.Cookie{Name: cookieName, Raw: "hello"})
-// 	if !(session.Token == nil && session.Destination == "") {
-// 		t.Error(session)
-// 	}
-// 	if w.Header().Get("Set-Cookie") != "" {
-// 		t.Error(w.Header().Get("Set-Cookie"))
-// 	}
-// }
-
-func TestCallback(t *testing.T) {
-	// call Start to create a valid redirect; parse the redirect to be able to create a valid callback
+func setupTestHarness() *harness {
 	hashKey := make([]byte, cookieHashKeyLength)
 	encryptionKey := make([]byte, cookieEncryptionKeyLength)
 	securecookies := securecookie.New(hashKey, encryptionKey)
 	auth := New("clientID", "clientSecret", "http://example.com/redirect", []string{"scope"},
-		securecookies)
+		securecookies, "/noauth")
+	return &harness{securecookies, auth}
+}
 
+func TestCallback(t *testing.T) {
+	// call Start to create a valid redirect; parse the redirect to be able to create a valid callback
+	h := setupTestHarness()
 	destination := "/some/path?query=foo"
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/start", nil)
-	err := auth.Start(w, r, destination)
+	err := h.auth.Start(w, r, destination)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +77,7 @@ func TestCallback(t *testing.T) {
 		if cookie != nil {
 			r.Header.Set("Cookie", cookie.String())
 		}
-		err := auth.HandleCallback(w, r)
+		err := h.auth.HandleCallback(w, r)
 		return w, err
 	}
 
@@ -129,7 +123,7 @@ func TestCallback(t *testing.T) {
 		w.Write([]byte(`{"access_token": "90d", "scope": "user", "token_type": "bearer", "expires": 100}`))
 	}))
 	defer ts.Close()
-	auth.oauthConfig.Endpoint.TokenURL = ts.URL + "/token"
+	h.auth.oauthConfig.Endpoint.TokenURL = ts.URL + "/token"
 
 	w, err = doCallback(map[string]string{"state": stateSerialized, "code": "code"}, validCookie)
 	if err != nil {
@@ -147,7 +141,7 @@ func TestCallback(t *testing.T) {
 	}
 	finalCookie := result.Cookies()[0]
 	session := &authState{}
-	err = securecookies.Decode(finalCookie.Name, finalCookie.Value, session)
+	err = h.securecookies.Decode(finalCookie.Name, finalCookie.Value, session)
 	if err != nil {
 		t.Error(err)
 	}
@@ -163,7 +157,7 @@ func TestCallback(t *testing.T) {
 
 	r = httptest.NewRequest("GET", "/foo", nil)
 	r.Header.Set("Cookie", finalCookie.String())
-	token, err := auth.GetToken(r)
+	token, err := h.auth.GetToken(r)
 	if err != nil {
 		t.Error(err)
 	}
@@ -173,30 +167,69 @@ func TestCallback(t *testing.T) {
 }
 
 func TestToken(t *testing.T) {
-	// call Start to create a valid redirect; parse the redirect to be able to create a valid callback
-	hashKey := make([]byte, cookieHashKeyLength)
-	encryptionKey := make([]byte, cookieEncryptionKeyLength)
-	securecookies := securecookie.New(hashKey, encryptionKey)
-	auth := New("clientID", "clientSecret", "http://example.com/redirect", []string{"scope"},
-		securecookies)
-
+	h := setupTestHarness()
 	// no cookie
-	token, err := auth.GetToken(httptest.NewRequest("GET", "/foo", nil))
+	token, err := h.auth.GetToken(httptest.NewRequest("GET", "/foo", nil))
 	if err != ErrNotAuthenticated {
 		t.Error(err, token)
 	}
 }
 
-// func TestOAuth2StartExpiredCookie(t *testing.T) {
-// 	hashKey := make([]byte, cookieHashKeyLength)
-// 	encrytionKey := make([]byte, cookieEncryptionKeyLength)
-// 	sessions := newSessionStore(hashKey, encryptionKey)
+func TestHandleWithClient(t *testing.T) {
+	h := setupTestHarness()
+	var client *http.Client
+	handleFunc := func(w http.ResponseWriter, r *http.Request, c *http.Client) {
+		client = c
+	}
+	handler := h.auth.Handler(handleFunc)
 
-// 	// get with no cookies: should set the cookie
-// 	w := httptest.NewRecorder()
-// 	r := httptest.NewRequest("GET", "/start", nil)
-// 	session, err := sessions.getOrCreate(w, r)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// }
+	// request without cookies: redirected to noauth, with the full path encoded
+	w := httptest.NewRecorder()
+	const origPath = "/hello/world?query=string&foo=bar"
+	r := httptest.NewRequest("GET", origPath, nil)
+	handler.ServeHTTP(w, r)
+	resp := w.Result()
+	if resp.StatusCode != http.StatusFound {
+		t.Error(resp.Status)
+	}
+	redir, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Error(err)
+	}
+	if redir.Path != "/noauth" && redir.Query().Get("path") != origPath {
+		t.Error(redir)
+	}
+	if client != nil {
+		t.Error(client)
+	}
+
+	// create a session with an expired token: redirected to Google
+	session := &authState{Token: &oauth2.Token{AccessToken: "access", Expiry: time.Now().Add(-time.Hour)}}
+	cookie, err := makeCookie(h.auth.securecookies, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest("GET", origPath, nil)
+	r.AddCookie(cookie)
+	handler.ServeHTTP(w, r)
+	resp = w.Result()
+	if resp.StatusCode != http.StatusFound {
+		t.Error(resp.Status)
+	}
+	redir, err = url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Error(err)
+	}
+	if redir.Host != "accounts.google.com" {
+		t.Error(redir)
+	}
+	if client != nil {
+		t.Error(client)
+	}
+	// check that the session has the correct destination
+	session = h.sessionFromResponse(w)
+	if session.Destination != origPath {
+		t.Error(session.Destination)
+	}
+}

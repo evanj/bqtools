@@ -27,12 +27,16 @@ const stateLength = 32
 const cookieName = "googlelogin"
 
 // TODO: Configurable? E.g. only keep a session cookie?
-// TODO: expiration of securecookie should match this§q;
+// TODO: expiration of securecookie should match this
 const cookieExpiration = 24 * 30 * time.Hour
 
 // Either there is no saved token, or the cookie has expired.
 var ErrNotAuthenticated = errors.New("googlelogin: not authenticated")
 var ErrTokenExpired = errors.New("googlelogin: oauth2 token expired")
+
+// HandlerWithClient handles an HTTP request with a required OAuth2 authenticated HTTP client. This
+// makes it explicit that this handler does not function without authentication.
+type HandlerWithClient func(w http.ResponseWriter, r *http.Request, client *http.Client)
 
 // If you request email or profile scopes, you will get an id_token in the response with
 // details about the authenticated user. Otherwise, you just get an opaque token that you cannot
@@ -52,12 +56,15 @@ var ErrTokenExpired = errors.New("googlelogin: oauth2 token expired")
 type Authenticator struct {
 	oauthConfig   oauth2.Config
 	securecookies *securecookie.SecureCookie
+	noAuthPath    string
 }
 
 // New creates a new Authenticator for authenticating users. The clientID, clientSecret, and
-// redirectURL must registered with Google. The scopes are
-func New(clientID string, clientSecret string, redirectURL string,
-	scopes []string, securecookies *securecookie.SecureCookie) *Authenticator {
+// redirectURL must registered with Google. The scopes list the permissions required by this
+// application. The browser will be redirected to noAuthPath when HandleWithToken and they are
+// not authenticated.
+func New(clientID string, clientSecret string, redirectURL string, scopes []string,
+	securecookies *securecookie.SecureCookie, noAuthPath string) *Authenticator {
 
 	// TODO: Validate parameters
 	return &Authenticator{
@@ -68,7 +75,8 @@ func New(clientID string, clientSecret string, redirectURL string,
 			Scopes:       scopes,
 			RedirectURL:  "http://localhost:8080/oauth2callback",
 		},
-		securecookies}
+		securecookies,
+		noAuthPath}
 }
 
 // Stores the user's Google OAuth access token and/or the state for an oauth login
@@ -87,7 +95,7 @@ func (a *Authenticator) getSession(r *http.Request) *authState {
 	if err != nil {
 		if err != http.ErrNoCookie {
 			// should be the only kind of error
-			log.Printf("googlelogin: error: ignoring expected error getting cookie: %s", err.Error())
+			log.Printf("googlelogin: error: ignoring unexpected error getting cookie: %s", err.Error())
 		}
 		// no session: return an empty session
 		return &authState{}
@@ -102,10 +110,10 @@ func (a *Authenticator) getSession(r *http.Request) *authState {
 	return session
 }
 
-func (a *Authenticator) saveSession(w http.ResponseWriter, session *authState) error {
-	serialized, err := a.securecookies.Encode(cookieName, session)
+func makeCookie(securecookies *securecookie.SecureCookie, session *authState) (*http.Cookie, error) {
+	serialized, err := securecookies.Encode(cookieName, session)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cookie := &http.Cookie{
 		Name:     cookieName,
@@ -115,6 +123,14 @@ func (a *Authenticator) saveSession(w http.ResponseWriter, session *authState) e
 		Value:    serialized,
 		// TODO: Set this based on an option
 		// Secure:   true,
+	}
+	return cookie, nil
+}
+
+func (a *Authenticator) saveSession(w http.ResponseWriter, session *authState) error {
+	cookie, err := makeCookie(a.securecookies, session)
+	if err != nil {
+		return err
 	}
 	http.SetCookie(w, cookie)
 	return nil
@@ -154,7 +170,7 @@ func (a *Authenticator) Start(w http.ResponseWriter, r *http.Request, destinatio
 	stateSerialized := base64.RawURLEncoding.EncodeToString(session.State)
 	log.Printf("oauth state param = %s", stateSerialized)
 
-	// AccessTypeOnline only gives us an access token, not a refresh token (lower security risk)
+	// AccessTypeOnline only gives us an access token without a refresh token (lower security risk)
 	// use "auto" to get no prompt on "refresh"
 	url := a.oauthConfig.AuthCodeURL(stateSerialized, oauth2.AccessTypeOnline,
 		oauth2.SetAuthURLParam("approval_prompt", "auto"))
@@ -235,6 +251,35 @@ func (a *Authenticator) GetToken(r *http.Request) (*oauth2.Token, error) {
 		return nil, ErrNotAuthenticated
 	}
 	return session.Token, nil
+}
+
+func (a *Authenticator) Handler(handler HandlerWithClient) http.Handler {
+	httpHandleFunc := func(w http.ResponseWriter, r *http.Request) {
+		session := a.getSession(r)
+		if session.Token == nil {
+			// no authentication: inform the user that they need to log in by redirecting;
+			// TODO: save their original destination and redirect there, ideally in a query parameter
+			// so that it works in multiple tabs
+			log.Printf("googlelogin: unauthenticated request for %s; redirecting", r.URL.Path)
+			http.Redirect(w, r, a.noAuthPath, http.StatusFound)
+			return
+		}
+		if !session.Token.Valid() {
+			// user previously did authenticate: try to automatically "refresh"
+			log.Printf("googlelogin: expired token; attempting to renew")
+			err := a.Start(w, r, r.URL.String())
+			if err != nil {
+				log.Printf("googlelogin: error while attempting to renew: %s", err.Error())
+				http.Error(w, "Forbidden", http.StatusForbidden)
+			}
+			return
+		}
+
+		// looks valid: execute the real handler
+		client := a.oauthConfig.Client(context.TODO(), session.Token)
+		handler(w, r, client)
+	}
+	return http.HandlerFunc(httpHandleFunc)
 }
 
 // see https://tools.ietf.org/html/rfc6749#section-10.12
