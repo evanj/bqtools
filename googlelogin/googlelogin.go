@@ -64,10 +64,17 @@ type Authenticator struct {
 // application. The browser will be redirected to noAuthPath when HandleWithToken and they are
 // not authenticated.
 func New(clientID string, clientSecret string, redirectURL string, scopes []string,
-	securecookies *securecookie.SecureCookie, noAuthPath string) *Authenticator {
+	securecookies *securecookie.SecureCookie, noAuthPath string, mux *http.ServeMux) (
+	*Authenticator, error) {
+
+	// parse the redirect path and register it with mux
+	parsedRedirect, err := url.Parse(redirectURL)
+	if err != nil {
+		return nil, err
+	}
 
 	// TODO: Validate parameters
-	return &Authenticator{
+	auth := &Authenticator{
 		oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
@@ -77,6 +84,10 @@ func New(clientID string, clientSecret string, redirectURL string, scopes []stri
 		},
 		securecookies,
 		noAuthPath}
+
+	// TODO: Allow users to manually invoke the callback?
+	mux.HandleFunc(parsedRedirect.Path, auth.HandleCallback)
+	return auth, nil
 }
 
 // Stores the user's Google OAuth access token and/or the state for an oauth login
@@ -178,12 +189,19 @@ func (a *Authenticator) Start(w http.ResponseWriter, r *http.Request, destinatio
 	return nil
 }
 
-func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) error {
+func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) {
+	err := a.handleCallbackError(w, r)
+	if err != nil {
+		log.Println(err.Error())
+		http.Error(w, "authentication error please try again", http.StatusInternalServerError)
+	}
+}
+
+func (a *Authenticator) handleCallbackError(w http.ResponseWriter, r *http.Request) error {
 	log.Println("oauth2 callback", r.Method, r.URL.String())
 
 	errorString := r.FormValue("error")
 	if errorString != "" {
-		log.Printf("googlelogin: callback error: %s", errorString)
 		// possible errors: https://tools.ietf.org/html/rfc6749#section-4.2.2.1
 		deleteSession(w)
 		return fmt.Errorf("googlelogin: oauth error response: %s", errorString)
@@ -192,14 +210,12 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) e
 	stateString := r.FormValue("state")
 	state, err := base64.RawURLEncoding.DecodeString(stateString)
 	if err != nil || len(state) == 0 {
-		log.Printf("googlelogin: invalid state '%s' err %v", stateString, err)
 		deleteSession(w)
-		return errors.New("googlelogin: invalid state parameter")
+		return fmt.Errorf("googlelogin: invalid state '%s' err %v", stateString, err)
 	}
 
 	code := r.FormValue("code")
 	if len(code) == 0 {
-		log.Printf("googlelogin: missing code parameter")
 		deleteSession(w)
 		return errors.New("googlelogin: missing code parameter")
 	}
@@ -207,12 +223,10 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) e
 	// on error the zero session will fail to match the incoming state
 	session := a.getSession(r)
 	if !bytes.Equal(state, session.State) {
-		log.Printf("googlelogin: invalid session cookie state len %d", len(session.State))
 		deleteSession(w)
-		return errors.New("googlelogin: invalid session cookie")
+		return fmt.Errorf("googlelogin: invalid session cookie state len %d", len(session.State))
 	}
 	if len(session.Destination) == 0 {
-		log.Printf("googlelogin: invalid session cookie no destination")
 		deleteSession(w)
 		return errors.New("googlelogin: invalid session cookie no destination")
 	}
@@ -222,7 +236,6 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) e
 	ctx := context.Background()
 	token, err := a.oauthConfig.Exchange(ctx, code)
 	if err != nil {
-		log.Printf("googlelogin: error exchanging code %s", err.Error())
 		deleteSession(w)
 		return fmt.Errorf("googlelogin: error exchanging code %s", err.Error())
 	}
@@ -233,7 +246,6 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) e
 	session = &authState{Token: token}
 	err = a.saveSession(w, session)
 	if err != nil {
-		log.Printf("googlelogin: error saving session cookie: %s", err.Error())
 		deleteSession(w)
 		return fmt.Errorf("googlelogin: error saving session cookie: %s", err.Error())
 	}

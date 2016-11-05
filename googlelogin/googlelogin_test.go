@@ -17,6 +17,7 @@ import (
 type harness struct {
 	securecookies *securecookie.SecureCookie
 	auth          *Authenticator
+	mux           *http.ServeMux
 }
 
 func (h *harness) sessionFromResponse(w *httptest.ResponseRecorder) *authState {
@@ -36,9 +37,23 @@ func setupTestHarness() *harness {
 	hashKey := make([]byte, cookieHashKeyLength)
 	encryptionKey := make([]byte, cookieEncryptionKeyLength)
 	securecookies := securecookie.New(hashKey, encryptionKey)
-	auth := New("clientID", "clientSecret", "http://example.com/redirect", []string{"scope"},
-		securecookies, "/noauth")
-	return &harness{securecookies, auth}
+	mux := http.NewServeMux()
+	auth, err := New("clientID", "clientSecret", "http://example.com/redirect", []string{"scope"},
+		securecookies, "/noauth", mux)
+	if err != nil {
+		panic(err)
+	}
+	return &harness{securecookies, auth, mux}
+}
+
+func TestNew(t *testing.T) {
+	h := setupTestHarness()
+	// check that the mux handles the redirect
+	r := httptest.NewRequest("GET", "/redirect", nil)
+	_, pattern := h.mux.Handler(r)
+	if pattern == "" {
+		t.Fatal("redirect handler not registered")
+	}
 }
 
 func TestCallback(t *testing.T) {
@@ -77,7 +92,7 @@ func TestCallback(t *testing.T) {
 		if cookie != nil {
 			r.Header.Set("Cookie", cookie.String())
 		}
-		err := h.auth.HandleCallback(w, r)
+		err := h.auth.handleCallbackError(w, r)
 		return w, err
 	}
 

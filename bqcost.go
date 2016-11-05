@@ -44,9 +44,25 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, `<html><body><form method="post" action="/oauth2start">
-	<p>To use BigQuery backup  <input type="submit" value="sign in with google"></p>
-	</form></body></html>`)
+	fmt.Fprintf(w, `<html><body>
+	<p>To use the BigQuery cost tool, you will need to provide read-only access to BigQuery.</p>
+	<p><a href="/start">Provide access to Google BigQuery</a></p>
+	</body></html>`)
+}
+
+func handleNoAuth(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, `<html><body>
+	<p>Unauthenticated: That feature requires access to Google BigQuery</p>
+	<p><a href="/start">Provide access to Google BigQuery</a></p>
+	</body></html>`)
+}
+
+func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
+	err := s.auth.Start(w, r, "/projects")
+	if err != nil {
+		log.Printf("bqcost: error starting googlelogin: %s", err.Error())
+		http.Error(w, "authentication error", http.StatusInternalServerError)
+	}
 }
 
 func (s *server) handleSuccess(w http.ResponseWriter, r *http.Request) {
@@ -66,19 +82,6 @@ func (s *server) handleSuccess(w http.ResponseWriter, r *http.Request) {
 
 type server struct {
 	auth *googlelogin.Authenticator
-}
-
-func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
-	err := s.auth.Start(w, r, "/success")
-	if err != nil {
-		panic(err)
-	}
-}
-
-func (s *server) handleCallback(w http.ResponseWriter, r *http.Request) {
-	log.Println("handleCallback")
-	err := s.auth.HandleCallback(w, r)
-	log.Println("callback handled:", err)
 }
 
 func projectsHandler(w http.ResponseWriter, r *http.Request, client *http.Client) {
@@ -176,21 +179,23 @@ func projectIndex(w http.ResponseWriter, r *http.Request, client *http.Client, p
 
 func main() {
 	securecookies := securecookie.New(cookieHashKey, cookieEncryptionKey)
-	auth := googlelogin.New(clientID, clientSecret, redirectURL,
-		[]string{bigquery.BigqueryScope + ".readonly"}, securecookies, "/noauth")
+	auth, err := googlelogin.New(clientID, clientSecret, redirectURL,
+		[]string{bigquery.BigqueryScope + ".readonly"}, securecookies, "/noauth", http.DefaultServeMux)
+	if err != nil {
+		panic(err)
+	}
 	server := &server{auth}
 
 	http.HandleFunc("/", handleRoot)
-	http.HandleFunc("/success", server.handleSuccess)
 	http.HandleFunc("/start", server.handleStart)
-	http.HandleFunc("/oauth2callback", server.handleCallback)
+	http.HandleFunc("/noauth", handleNoAuth)
 
 	http.Handle("/projects/", auth.Handler(projectsHandler))
 
 	const hostport = "localhost:8080"
 	fmt.Printf("listening on http://%s/\n", hostport)
 
-	err := http.ListenAndServe(hostport, nil)
+	err = http.ListenAndServe(hostport, nil)
 	if err != nil {
 		panic(err)
 	}
