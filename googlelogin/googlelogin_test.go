@@ -192,9 +192,9 @@ func TestToken(t *testing.T) {
 
 func TestHandleWithClient(t *testing.T) {
 	h := setupTestHarness()
-	var client *http.Client
-	handleFunc := func(w http.ResponseWriter, r *http.Request, c *http.Client) {
-		client = c
+	var token *oauth2.Token
+	handleFunc := func(w http.ResponseWriter, r *http.Request, t *oauth2.Token) {
+		token = t
 	}
 	handler := h.auth.Handler(handleFunc)
 
@@ -214,8 +214,8 @@ func TestHandleWithClient(t *testing.T) {
 	if redir.Path != "/noauth" && redir.Query().Get("path") != origPath {
 		t.Error(redir)
 	}
-	if client != nil {
-		t.Error(client)
+	if token != nil {
+		t.Error(token)
 	}
 
 	// create a session with an expired token: redirected to Google
@@ -239,8 +239,8 @@ func TestHandleWithClient(t *testing.T) {
 	if redir.Host != "accounts.google.com" {
 		t.Error(redir)
 	}
-	if client != nil {
-		t.Error(client)
+	if token != nil {
+		t.Error(token)
 	}
 	// check that the session has the correct destination
 	session = h.sessionFromResponse(w)

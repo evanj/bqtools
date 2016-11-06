@@ -34,9 +34,9 @@ const cookieExpiration = 24 * 30 * time.Hour
 var ErrNotAuthenticated = errors.New("googlelogin: not authenticated")
 var ErrTokenExpired = errors.New("googlelogin: oauth2 token expired")
 
-// HandlerWithClient handles an HTTP request with a required OAuth2 authenticated HTTP client. This
+// HandlerWithToken handles an HTTP request with a required OAuth2 token. This
 // makes it explicit that this handler does not function without authentication.
-type HandlerWithClient func(w http.ResponseWriter, r *http.Request, client *http.Client)
+type HandlerWithToken func(w http.ResponseWriter, r *http.Request, token *oauth2.Token)
 
 // If you request email or profile scopes, you will get an id_token in the response with
 // details about the authenticated user. Otherwise, you just get an opaque token that you cannot
@@ -88,6 +88,10 @@ func New(clientID string, clientSecret string, redirectURL string, scopes []stri
 	// TODO: Allow users to manually invoke the callback?
 	mux.HandleFunc(parsedRedirect.Path, auth.HandleCallback)
 	return auth, nil
+}
+
+func (a *Authenticator) Client(ctx context.Context, token *oauth2.Token) *http.Client {
+	return a.oauthConfig.Client(ctx, token)
 }
 
 // Stores the user's Google OAuth access token and/or the state for an oauth login
@@ -265,7 +269,7 @@ func (a *Authenticator) GetToken(r *http.Request) (*oauth2.Token, error) {
 	return session.Token, nil
 }
 
-func (a *Authenticator) Handler(handler HandlerWithClient) http.Handler {
+func (a *Authenticator) Handler(handler HandlerWithToken) http.Handler {
 	httpHandleFunc := func(w http.ResponseWriter, r *http.Request) {
 		session := a.getSession(r)
 		if session.Token == nil {
@@ -288,8 +292,7 @@ func (a *Authenticator) Handler(handler HandlerWithClient) http.Handler {
 		}
 
 		// looks valid: execute the real handler
-		client := a.oauthConfig.Client(context.TODO(), session.Token)
-		handler(w, r, client)
+		handler(w, r, session.Token)
 	}
 	return http.HandlerFunc(httpHandleFunc)
 }

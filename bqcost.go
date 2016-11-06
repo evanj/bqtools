@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"html/template"
@@ -8,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	bigquery "google.golang.org/api/bigquery/v2"
-
 	"github.com/gorilla/securecookie"
+	"golang.org/x/oauth2"
+	bigquery "google.golang.org/api/bigquery/v2"
 
 	"./googlelogin"
 )
@@ -65,26 +66,11 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *server) handleSuccess(w http.ResponseWriter, r *http.Request) {
-	token, err := s.auth.GetToken(r)
-	tokenvalid := false
-	tokeninfo := ""
-	var err2 error
-	if token != nil {
-		tokenvalid = token.Valid()
-		tokeninfo, err2 = googlelogin.GetTokenInfo(token)
-	}
-	fmt.Fprintf(w, `<html><body><h1>Success</h1><p>token: %v err: %v</p>
-		<p>token.Valid(): %v</p>
-		<p>tokeninfo: %s %v</p>
-		</body></html>`, token, err, tokenvalid, tokeninfo, err2)
-}
-
 type server struct {
 	auth *googlelogin.Authenticator
 }
 
-func projectsHandler(w http.ResponseWriter, r *http.Request, client *http.Client) {
+func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request, token *oauth2.Token) {
 	parts := strings.Split(r.URL.Path, "/")
 	log.Printf("%s %s %d", r.URL.Path, parts, len(parts))
 	if len(parts) != 3 {
@@ -92,6 +78,7 @@ func projectsHandler(w http.ResponseWriter, r *http.Request, client *http.Client
 		return
 	}
 	projectID := parts[2]
+	client := s.auth.Client(context.TODO(), token)
 	if projectID == "" {
 		log.Printf("%s = listProjects", r.URL.Path)
 		listProjects(w, r, client)
@@ -190,7 +177,7 @@ func main() {
 	http.HandleFunc("/start", server.handleStart)
 	http.HandleFunc("/noauth", handleNoAuth)
 
-	http.Handle("/projects/", auth.Handler(projectsHandler))
+	http.Handle("/projects/", auth.Handler(server.projectsHandler))
 
 	const hostport = "localhost:8080"
 	fmt.Printf("listening on http://%s/\n", hostport)
