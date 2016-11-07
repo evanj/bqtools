@@ -2,6 +2,7 @@ package bqscrape
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -15,6 +16,9 @@ const requestPerSecondLimit = rate.Limit(50)
 const maxConcurrentAPIRequests = 10
 const maxDatasets = 100
 const maxTables = 1000
+
+// https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#resource
+const TypeTable = "TABLE"
 
 // Makes it easier to test this code
 type api interface {
@@ -108,10 +112,15 @@ func listAllTables(bqAPI api, projectId string, limiter *rate.Limiter) (
 	return tables, nil
 }
 
-// Fetches all bigquery tables from projectId. TODO: Parallelize to make it go faster
+// Fetches all bigquery tables from projectId.
 func ListAllTables(bq *bigquery.Service, projectId string) ([]*bigquery.TableListTables, error) {
 	// burst = per second rate means worst case we send 2X requests in the first second
 	limiter := rate.NewLimiter(requestPerSecondLimit, int(requestPerSecondLimit))
 	bqAPI := &bigQueryAPI{bq}
 	return listAllTables(bqAPI, projectId, limiter)
+}
+
+// Fetches all metadata from all bigquery tables from projectId. TODO: Parallelize to make it go faster
+func GetAllTables(bq *bigquery.Service, projectId string) ([]*bigquery.Table, error) {
+	return nil, errors.New("unimplemented")
 }

@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/go-gorp/gorp"
 	"github.com/gorilla/securecookie"
 	"golang.org/x/oauth2"
 	bigquery "google.golang.org/api/bigquery/v2"
 
-	"./googlelogin"
+	"github.com/evanj/bqbackup/bqdb"
+	"github.com/evanj/bqbackup/bqscrape"
+	"github.com/evanj/bqbackup/googlelogin"
 )
 
 // TODO: Load these in a configuration file!
@@ -67,7 +72,9 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 type server struct {
-	auth *googlelogin.Authenticator
+	auth         *googlelogin.Authenticator
+	dbmap        *gorp.DbMap
+	startLoading func(user *bqdb.User, projectID string) error
 }
 
 func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request, token *oauth2.Token) {
@@ -164,6 +171,144 @@ func projectIndex(w http.ResponseWriter, r *http.Request, client *http.Client, p
 	}
 }
 
+var errIsLoading = errors.New("loading data from bigquery")
+
+// Returns a user or calls loader() to transactionally start loading. loader cannot block, but if
+// it returns as error the user will not be inserted. If loader starts a goroutine, it should copy
+// data from user to avoid data races.
+func (s *server) getUserOrStartLoading(token *oauth2.Token, projectID string) (
+	*bqdb.User, error) {
+
+	txn, err := s.dbmap.Begin()
+	if err != nil {
+		return nil, err
+	}
+	// don't forget to rollback
+	defer txn.Rollback()
+
+	user, err := bqdb.GetUserByAccessToken(txn, token.AccessToken)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("bqcost: token %s creating new user", token.AccessToken)
+			user.AccessToken = token.AccessToken
+			user.IsLoading = true
+			// insert before calling loader so it can store the primary key
+			// TODO: This probably should use one transaction to create the user and another to toggle
+			// "IsLoading": The commit could fail causing user id to be re-used, or the token to be
+			// assigned to a different user id
+			err = txn.Insert(user)
+			if err != nil {
+				return nil, err
+			}
+
+			err = s.startLoading(user, projectID)
+			if err != nil {
+				return nil, err
+			}
+
+			// loading started successfully: commit the transaction
+			err = txn.Commit()
+			if err != nil {
+				return nil, err
+			}
+			log.Printf("bqcost: token %s loading started", token.AccessToken)
+			return nil, errIsLoading
+		}
+		return nil, err
+	}
+	log.Printf("bqcost: user? %v", user)
+	return nil, errIsLoading
+}
+
+func (s *server) finishLoading(userID int64, loadingErr error) error {
+	txn, err := s.dbmap.Begin()
+	if err != nil {
+		return err
+	}
+	// don't forget to rollback
+	defer txn.Rollback()
+
+	user, err := bqdb.GetUserByID(txn, userID)
+	if err != nil {
+		return err
+	}
+	if !user.IsLoading || user.LoadingError != "" {
+		return fmt.Errorf("bqcost: finishLoading: user has already finished loading: %v", user)
+	}
+	user.IsLoading = false
+	if loadingErr != nil {
+		user.LoadingError = loadingErr.Error()
+	}
+	_, err = txn.Update(user)
+	if err != nil {
+		return err
+	}
+	return txn.Commit()
+}
+
+func (s *server) startLocalhostLoader(user *bqdb.User, projectID string) error {
+	// start a goroutine to start sync-ing data: copy args to avoid data races
+	go s.localhostLoaderGoroutine(user.ID, user.AccessToken, projectID)
+	return nil
+}
+
+func (s *server) localhostLoaderGoroutine(userID int64, accessToken string, projectID string) {
+	err := s.loadBigqueryData(userID, accessToken, projectID)
+	if err != nil {
+		log.Printf("bqcost: token %s loading error %s", accessToken, err.Error())
+	}
+	err = s.finishLoading(userID, err)
+	if err != nil {
+		log.Printf("bqcost: token %s error finishing loading: %s", accessToken, err.Error())
+	}
+}
+
+func (s *server) loadBigqueryData(userID int64, accessToken string, projectId string) error {
+	client := s.auth.Client(context.TODO(), &oauth2.Token{AccessToken: accessToken})
+	bq, err := bigquery.New(client)
+	if err != nil {
+		return err
+	}
+
+	tables, err := bqscrape.GetAllTables(bq, projectId)
+	if err != nil {
+		return err
+	}
+
+	dbTables := []interface{}{}
+	for _, table := range tables {
+		if table.Type != bqscrape.TypeTable {
+			log.Printf("bqcost: token %s project %s ignoring table type %s",
+				accessToken, projectId, table.Type)
+			continue
+		}
+		dbTable := &bqdb.Table{}
+		dbTable.UserID = userID
+		dbTable.ProjectID = table.TableReference.ProjectId
+		dbTable.DatasetID = table.TableReference.DatasetId
+		dbTable.TableID = table.TableReference.TableId
+		dbTable.FriendlyName = table.FriendlyName
+		dbTable.Description = table.Description
+		dbTable.NumBytes = table.NumBytes
+		dbTable.NumLongTermBytes = table.NumLongTermBytes
+		dbTable.NumRows = int64(table.NumRows)
+
+		dbTable.CreationTimeMs = table.CreationTime
+		dbTable.LastModifiedTimeMs = int64(table.LastModifiedTime)
+
+		if table.StreamingBuffer != nil {
+			dbTable.StreamingEstimatedBytes = int64(table.StreamingBuffer.EstimatedBytes)
+			dbTable.StreamingEstimatedRows = int64(table.StreamingBuffer.EstimatedRows)
+		}
+		dbTables = append(dbTables, dbTable)
+	}
+
+	// let's do a massive insert: TODO: Does gorp actually execute this as batch?
+	err = s.dbmap.Insert(dbTables...)
+
+	return nil
+}
+
 func main() {
 	securecookies := securecookie.New(cookieHashKey, cookieEncryptionKey)
 	auth, err := googlelogin.New(clientID, clientSecret, redirectURL,
@@ -171,7 +316,21 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	server := &server{auth}
+
+	// set up the database
+	db, err := sql.Open("sqlite3", "test.sqlite")
+	if err != nil {
+		panic(err)
+	}
+	dbmap := &gorp.DbMap{Db: db, Dialect: gorp.SqliteDialect{}}
+	err = bqdb.RegisterAndCreateTablesIfNeeded(dbmap)
+	if err != nil {
+		panic(err)
+	}
+
+	server := &server{auth, dbmap, nil}
+	// TODO: figure out a better way to customize this
+	server.startLoading = server.startLocalhostLoader
 
 	http.HandleFunc("/", handleRoot)
 	http.HandleFunc("/start", server.handleStart)
