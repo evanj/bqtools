@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-gorp/gorp"
 	"github.com/gorilla/securecookie"
+	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/oauth2"
 	bigquery "google.golang.org/api/bigquery/v2"
 
@@ -317,13 +318,7 @@ func main() {
 		panic(err)
 	}
 
-	// set up the database
-	db, err := sql.Open("sqlite3", "test.sqlite")
-	if err != nil {
-		panic(err)
-	}
-	dbmap := &gorp.DbMap{Db: db, Dialect: gorp.SqliteDialect{}}
-	err = bqdb.RegisterAndCreateTablesIfNeeded(dbmap)
+	dbmap, err := bqdb.OpenAndCreateTablesIfNeeded("sqlite3", "test.sqlite", gorp.SqliteDialect{})
 	if err != nil {
 		panic(err)
 	}
