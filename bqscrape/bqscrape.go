@@ -14,7 +14,10 @@ import (
 const requestPerSecondLimit = rate.Limit(50)
 const maxConcurrentAPIRequests = 10
 const maxDatasets = 100
-const maxTables = 1000
+const maxTables = 3000
+
+// https://cloud.google.com/bigquery/docs/data#paging-through-list-results
+const collectionMaxResults = 1000
 
 // https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#resource
 const TypeTable = "TABLE"
@@ -33,19 +36,28 @@ type bigQueryAPI struct {
 func (a *bigQueryAPI) listDatasets(projectId string, pageToken string) (
 	*bigquery.DatasetList, error) {
 	// TODO: filter attributes? Set max results
-	return a.bq.Datasets.List(projectId).PageToken(pageToken).Do()
+	return a.bq.Datasets.List(projectId).
+		PageToken(pageToken).
+		MaxResults(collectionMaxResults).
+		Do()
 }
 
 func (a *bigQueryAPI) listTables(projectId string, datasetId string, pageToken string) (
 	*bigquery.TableList, error) {
 	// TODO: filter attributes? Set max results
-	return a.bq.Tables.List(projectId, datasetId).PageToken(pageToken).Do()
+	return a.bq.Tables.List(projectId, datasetId).
+		PageToken(pageToken).
+		MaxResults(collectionMaxResults).
+		Do()
 }
 
 func (a *bigQueryAPI) getTable(projectId string, datasetId string, tableId string) (
 	*bigquery.Table, error) {
 	// TODO: filter attributes?
-	return a.bq.Tables.Get(projectId, datasetId, tableId).Do()
+	return a.bq.Tables.Get(projectId, datasetId, tableId).
+		// created with the API fields editor
+		Fields("creationTime,description,etag,expirationTime,friendlyName,id,kind,lastModifiedTime,numBytes,numLongTermBytes,numRows,streamingBuffer,type").
+		Do()
 }
 
 func listAllDatasets(bqAPI api, projectId string, limiter *rate.Limiter) (
@@ -60,7 +72,7 @@ func listAllDatasets(bqAPI api, projectId string, limiter *rate.Limiter) (
 			return nil, err
 		}
 
-		log.Printf("bqscrape: %d datasets in page", len(resp.Datasets))
+		log.Printf("bqscrape: project %s: %d datasets in page", projectId, len(resp.Datasets))
 		datasets = append(datasets, resp.Datasets...)
 		if len(datasets) > maxDatasets {
 			return nil, fmt.Errorf("bqscrape: projectId:%s exceeded max datasets:%d",
@@ -86,7 +98,8 @@ func appendTablesInDataset(tables []*bigquery.TableListTables, bqAPI api, projec
 			return nil, err
 		}
 
-		log.Printf("bqscrape: %d tables in page", len(resp.Tables))
+		log.Printf("bqscrape: project %s dataset %s: %d tables in page",
+			projectId, datasetId, len(resp.Tables))
 		tables = append(tables, resp.Tables...)
 		if len(tables) > maxTables {
 			return nil, fmt.Errorf("bqscrape: projectId:%s exceeded max tables:%d", projectId, maxTables)
