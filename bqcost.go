@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -86,13 +85,17 @@ func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request, token *
 		return
 	}
 	projectID := parts[2]
-	client := s.auth.Client(context.TODO(), token)
 	if projectID == "" {
 		log.Printf("%s = listProjects", r.URL.Path)
+		client := s.auth.Client(context.TODO(), token)
 		listProjects(w, r, client)
 	} else {
 		log.Printf("%s = projectIndex(%s)", r.URL.Path, projectID)
-		projectIndex(w, r, client, projectID)
+		err := s.projectIndex(w, r, token, projectID)
+		if err != nil {
+			log.Printf("projectIndex error %s", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -128,48 +131,92 @@ func listProjects(w http.ResponseWriter, r *http.Request, client *http.Client) {
 	}
 }
 
+type storageUsage struct {
+	Percent float64
+	Bytes   int64
+	ID      string
+}
+
 type projectIndexVars struct {
-	FriendlyName string
-	ProjectID    string
-	Datasets     []*bigquery.DatasetListDatasets
+	FriendlyName   string
+	ProjectID      string
+	DatasetStorage []*storageUsage
+	TableStorage   []*storageUsage
 }
 
 var projectIndexTemplate = template.Must(template.New("projectIndex").Parse(`<html><head>
 <title>Project {{.FriendlyName}} ({{.ProjectID}})</title>
 </head>
 <body>
-<h1>{{.FriendlyName}}: Datasets</h1>
-<ul>
-{{range .Datasets}}
-<li>{{.DatasetReference.DatasetId}} labels:{{.Labels}}</li>
+<h1>Datasets</h1>
+<table>
+<thead>
+<tr><th>Percent Storage</th><th>Storage</th><th>ID</th></tr>
+</thead>
+
+<tbody>
+{{range .DatasetStorage}}
+<tr><td>{{printf "%.1f%%" .Percent}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
 {{end}}
-</ul>
+</tbody>
+</table>
+
+<h1>Tables</h1>
+<table>
+<thead>
+<tr><th>Percent Storage</th><th>Storage</th><th>ID</th></tr>
+</thead>
+
+<tbody>
+{{range .TableStorage}}
+<tr><td>{{printf "%.1f%%" .Percent}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
+{{end}}
+</tbody>
+</table>
 </body>
 </html>`))
 
-func projectIndex(w http.ResponseWriter, r *http.Request, client *http.Client, projectID string) {
+func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oauth2.Token,
+	projectID string) error {
+
 	log.Printf("projectIndex %s", projectID)
-	bq, err := bigquery.New(client)
+	user, err := s.getUserOrStartLoading(token, projectID)
 	if err != nil {
-		panic(err)
-	}
-	result, err := bq.Datasets.List(projectID).Do()
-	if err != nil {
-		panic(err)
+		if err == errIsLoading {
+			w.Header().Set("Content-Type", "text/plain;charset=utf-8")
+			w.Write([]byte("Loading data from BigQuery. Please reload."))
+			return nil
+		} else {
+			return err
+		}
 	}
 
-	if result.NextPageToken != "" {
-		panic("next page token")
-	}
-	vars := &projectIndexVars{
-		"friendly name",
-		projectID,
-		result.Datasets,
-	}
-	err = projectIndexTemplate.Execute(w, vars)
+	pageVariables := &projectIndexVars{}
+	_, err = s.dbmap.Select(&pageVariables.DatasetStorage, `SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM 'Table'
+		WHERE UserID=? AND ProjectID=? GROUP BY ID`, user.ID, projectID)
 	if err != nil {
-		panic(err)
+		return err
 	}
+	_, err = s.dbmap.Select(&pageVariables.TableStorage, `SELECT DatasetID || '.' || TableID AS ID, NumBytes AS Bytes FROM 'Table'
+		WHERE UserID=? AND ProjectID=?`, user.ID, projectID)
+	if err != nil {
+		return err
+	}
+
+	// total bytes, compute percentages
+	totalBytes := int64(0)
+	for _, d := range pageVariables.DatasetStorage {
+		totalBytes += d.Bytes
+	}
+	percentageMultiplier := 1.0 / (float64(totalBytes) / 100.0)
+	for _, d := range pageVariables.DatasetStorage {
+		d.Percent = float64(d.Bytes) * percentageMultiplier
+	}
+	for _, t := range pageVariables.TableStorage {
+		t.Percent = float64(t.Bytes) * percentageMultiplier
+	}
+
+	return projectIndexTemplate.Execute(w, pageVariables)
 }
 
 var errIsLoading = errors.New("loading data from bigquery")
@@ -189,36 +236,44 @@ func (s *server) getUserOrStartLoading(token *oauth2.Token, projectID string) (
 
 	user, err := bqdb.GetUserByAccessToken(txn, token.AccessToken)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			log.Printf("bqcost: token %s creating new user", token.AccessToken)
-			user.AccessToken = token.AccessToken
-			user.IsLoading = true
-			// insert before calling loader so it can store the primary key
-			// TODO: This probably should use one transaction to create the user and another to toggle
-			// "IsLoading": The commit could fail causing user id to be re-used, or the token to be
-			// assigned to a different user id
-			err = txn.Insert(user)
-			if err != nil {
-				return nil, err
-			}
-
-			err = s.startLoading(user, projectID)
-			if err != nil {
-				return nil, err
-			}
-
-			// loading started successfully: commit the transaction
-			err = txn.Commit()
-			if err != nil {
-				return nil, err
-			}
-			log.Printf("bqcost: token %s loading started", token.AccessToken)
-			return nil, errIsLoading
-		}
 		return nil, err
 	}
-	log.Printf("bqcost: user? %v", user)
-	return nil, errIsLoading
+	if user == nil {
+		log.Printf("bqcost: token %s creating new user", token.AccessToken)
+		user = &bqdb.User{}
+		user.AccessToken = token.AccessToken
+		user.IsLoading = true
+		// insert before calling loader so it can store the primary key
+		// TODO: This probably should use one transaction to create the user and another to toggle
+		// "IsLoading": The commit could fail causing user id to be re-used, or the token to be
+		// assigned to a different user id
+		err = txn.Insert(user)
+		if err != nil {
+			return nil, err
+		}
+
+		err = s.startLoading(user, projectID)
+		if err != nil {
+			return nil, err
+		}
+
+		// loading started successfully: commit the transaction
+		err = txn.Commit()
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("bqcost: token %s loading started", token.AccessToken)
+		return nil, errIsLoading
+	}
+
+	log.Printf("bqcost: found user %v", user)
+	if user.IsLoading {
+		return nil, errIsLoading
+	}
+	if user.LoadingError != "" {
+		return nil, errors.New(user.LoadingError)
+	}
+	return user, nil
 }
 
 func (s *server) finishLoading(userID int64, loadingErr error) error {
@@ -232,6 +287,9 @@ func (s *server) finishLoading(userID int64, loadingErr error) error {
 	user, err := bqdb.GetUserByID(txn, userID)
 	if err != nil {
 		return err
+	}
+	if user == nil {
+		return fmt.Errorf("bqcost: finishLoading: user %d does not exist", userID)
 	}
 	if !user.IsLoading || user.LoadingError != "" {
 		return fmt.Errorf("bqcost: finishLoading: user has already finished loading: %v", user)
@@ -254,6 +312,8 @@ func (s *server) startLocalhostLoader(user *bqdb.User, projectID string) error {
 }
 
 func (s *server) localhostLoaderGoroutine(userID int64, accessToken string, projectID string) {
+	log.Printf("bqcost: localhostLoaderGoroutine start user %d %s project %s",
+		userID, accessToken, projectID)
 	err := s.loadBigqueryData(userID, accessToken, projectID)
 	if err != nil {
 		log.Printf("bqcost: token %s loading error %s", accessToken, err.Error())
@@ -262,6 +322,8 @@ func (s *server) localhostLoaderGoroutine(userID int64, accessToken string, proj
 	if err != nil {
 		log.Printf("bqcost: token %s error finishing loading: %s", accessToken, err.Error())
 	}
+	log.Printf("bqcost: localhostLoaderGoroutine end user %d %s project %s",
+		userID, accessToken, projectID)
 }
 
 func (s *server) loadBigqueryData(userID int64, accessToken string, projectId string) error {
@@ -276,11 +338,15 @@ func (s *server) loadBigqueryData(userID int64, accessToken string, projectId st
 		return err
 	}
 
-	dbTables := []interface{}{}
-	for _, table := range tables {
+	return s.saveBigqueryTables(userID, tables)
+}
+
+func (s *server) saveBigqueryTables(userID int64, tables []*bigquery.Table) error {
+	dbTables := make([]interface{}, len(tables))
+	for i, table := range tables {
 		if table.Type != bqscrape.TypeTable {
-			log.Printf("bqcost: token %s project %s ignoring table type %s",
-				accessToken, projectId, table.Type)
+			log.Printf("bqcost: uid %d table %v ignoring table type %s",
+				userID, table.TableReference, table.Type)
 			continue
 		}
 		dbTable := &bqdb.Table{}
@@ -301,13 +367,11 @@ func (s *server) loadBigqueryData(userID int64, accessToken string, projectId st
 			dbTable.StreamingEstimatedBytes = int64(table.StreamingBuffer.EstimatedBytes)
 			dbTable.StreamingEstimatedRows = int64(table.StreamingBuffer.EstimatedRows)
 		}
-		dbTables = append(dbTables, dbTable)
+		dbTables[i] = dbTable
 	}
 
 	// let's do a massive insert: TODO: Does gorp actually execute this as batch?
-	err = s.dbmap.Insert(dbTables...)
-
-	return nil
+	return s.dbmap.Insert(dbTables...)
 }
 
 func main() {
@@ -323,15 +387,15 @@ func main() {
 		panic(err)
 	}
 
-	server := &server{auth, dbmap, nil}
+	s := &server{auth, dbmap, nil}
 	// TODO: figure out a better way to customize this
-	server.startLoading = server.startLocalhostLoader
+	s.startLoading = s.startLocalhostLoader
 
 	http.HandleFunc("/", handleRoot)
-	http.HandleFunc("/start", server.handleStart)
+	http.HandleFunc("/start", s.handleStart)
 	http.HandleFunc("/noauth", handleNoAuth)
 
-	http.Handle("/projects/", auth.Handler(server.projectsHandler))
+	http.Handle("/projects/", auth.Handler(s.projectsHandler))
 
 	const hostport = "localhost:8080"
 	fmt.Printf("listening on http://%s/\n", hostport)

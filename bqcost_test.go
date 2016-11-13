@@ -4,16 +4,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/evanj/bqbackup/bqdb"
+	"github.com/evanj/bqbackup/bqscrape"
 	"github.com/go-gorp/gorp"
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/bigquery/v2"
 )
 
-func TestGetUserOrStartLoading(t *testing.T) {
-	// set up the database
+func newTestDB() *gorp.DbMap {
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		panic(err)
@@ -23,6 +26,12 @@ func TestGetUserOrStartLoading(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
+	return dbmap
+}
+
+func TestGetUserOrStartLoading(t *testing.T) {
+	dbmap := newTestDB()
+	defer dbmap.Db.Close()
 
 	var loaderUser *bqdb.User
 	loaderProject := ""
@@ -70,6 +79,7 @@ func TestGetUserOrStartLoading(t *testing.T) {
 	// calling with a different token, where loader returns an error should not insert anything
 	errLoading := errors.New("loading error")
 	server.startLoading = func(u *bqdb.User, projectID string) error {
+		loaderUser = u
 		return errLoading
 	}
 	otherToken := &oauth2.Token{AccessToken: "other token"}
@@ -79,6 +89,12 @@ func TestGetUserOrStartLoading(t *testing.T) {
 	}
 	if countUsers(otherToken) != 0 {
 		t.Error(otherToken)
+	}
+	otherID := loaderUser.ID
+	// finishing otherToken cannot work: was not inserted
+	err = server.finishLoading(otherID, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Error("expected does not exist error:", err)
 	}
 
 	// finish loading
@@ -98,5 +114,40 @@ func TestGetUserOrStartLoading(t *testing.T) {
 	err = server.finishLoading(loadedID, nil)
 	if err == nil {
 		t.Error(err)
+	}
+
+	// calling getUser again gets the error
+	user, err = server.getUserOrStartLoading(token, "project")
+	if err == nil || err.Error() != "some err" {
+		t.Error("expected some err:", err)
+	}
+}
+
+func TestSaveTables(t *testing.T) {
+	dbmap := newTestDB()
+	defer dbmap.Db.Close()
+
+	s := &server{nil, dbmap, nil}
+
+	tables := []*bigquery.Table{}
+	for i := 0; i < 3; i++ {
+		table := &bigquery.Table{
+			Type: bqscrape.TypeTable,
+			TableReference: &bigquery.TableReference{
+				ProjectId: "p", DatasetId: "d", TableId: "table" + strconv.Itoa(i)},
+		}
+		tables = append(tables, table)
+	}
+
+	err := s.saveBigqueryTables(42, tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := dbmap.SelectInt("SELECT COUNT(*) FROM `Table`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int(count) != len(tables) {
+		t.Error(count, len(tables))
 	}
 }
