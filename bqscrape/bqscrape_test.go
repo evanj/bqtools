@@ -2,20 +2,43 @@ package bqscrape
 
 import (
 	"errors"
-	"fmt"
+	"reflect"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
 
 	"golang.org/x/time/rate"
-
-	bigquery "google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/bigquery/v2"
 )
 
+const itemsPerPage = 2
+
 type fakeBigQueryAPI struct {
-	err        error
-	pages      []*bigquery.DatasetList
-	tablePages map[string]*bigquery.TableList
+	err           error
+	datasetTables map[string][]string
+}
+
+func extractPageSlice(items []string, pageToken string) ([]string, string, error) {
+	var err error
+	index := 0
+	if pageToken != "" {
+		index, err = strconv.Atoi(pageToken)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+
+	upper := index + itemsPerPage
+	if upper > len(items) {
+		upper = len(items)
+	}
+
+	nextPageToken := ""
+	if upper != len(items) {
+		nextPageToken = strconv.Itoa(upper)
+	}
+	return items[index:upper], nextPageToken, nil
 }
 
 func (a *fakeBigQueryAPI) listDatasets(projectId string, pageToken string) (
@@ -24,40 +47,58 @@ func (a *fakeBigQueryAPI) listDatasets(projectId string, pageToken string) (
 		return nil, a.err
 	}
 
-	// check that the caller sets the correct NextPageToken
-	nextPageToken := ""
-	for _, page := range a.pages {
-		if nextPageToken == pageToken {
-			return page, nil
-		}
-		nextPageToken = page.NextPageToken
+	// generate list of datasets
+	datasets := []string{}
+	for datasetID, _ := range a.datasetTables {
+		datasets = append(datasets, datasetID)
 	}
-	return nil, fmt.Errorf("could not find page %s", pageToken)
+	sort.Strings(datasets)
+
+	slice, nextPageToken, err := extractPageSlice(datasets, pageToken)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &bigquery.DatasetList{}
+	result.NextPageToken = nextPageToken
+	for _, datasetID := range slice {
+		ds := &bigquery.DatasetListDatasets{
+			DatasetReference: &bigquery.DatasetReference{ProjectId: projectId, DatasetId: datasetID},
+		}
+		result.Datasets = append(result.Datasets, ds)
+	}
+	return result, nil
 }
 
-func (a *fakeBigQueryAPI) listTables(projectId string, datasetId, pageToken string) (
+func (a *fakeBigQueryAPI) listTables(projectId string, datasetID string, pageToken string) (
 	*bigquery.TableList, error) {
-	panic("TODO: implement")
+
+	tables := a.datasetTables[datasetID]
+	slice, nextPageToken, err := extractPageSlice(tables, pageToken)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &bigquery.TableList{}
+	result.NextPageToken = nextPageToken
+	for _, tableID := range slice {
+		table := &bigquery.TableListTables{
+			TableReference: &bigquery.TableReference{
+				ProjectId: projectId, DatasetId: datasetID, TableId: tableID},
+		}
+		result.Tables = append(result.Tables, table)
+	}
+	return result, nil
 }
 
-func makePages(projectId string, numPages int, datasetsPerPage int) []*bigquery.DatasetList {
-	pages := []*bigquery.DatasetList{}
-	for i := 0; i < numPages; i++ {
-		page := &bigquery.DatasetList{}
-		if i > 0 {
-			pages[i-1].NextPageToken = strconv.Itoa(i)
-		}
+func (a *fakeBigQueryAPI) getTable(projectId string, datasetId string, tableId string) (
+	*bigquery.Table, error) {
 
-		for j := 0; j < datasetsPerPage; j++ {
-			dsId := "ds" + strconv.Itoa(i*datasetsPerPage+j)
-			ds := &bigquery.DatasetListDatasets{
-				DatasetReference: &bigquery.DatasetReference{ProjectId: "p", DatasetId: dsId},
-			}
-			page.Datasets = append(page.Datasets, ds)
-		}
-		pages = append(pages, page)
-	}
-	return pages
+	// TODO: check that the table "exists?"
+	return &bigquery.Table{
+		TableReference: &bigquery.TableReference{
+			ProjectId: projectId, DatasetId: datasetId, TableId: tableId},
+	}, nil
 }
 
 func TestListAllDatasets(t *testing.T) {
@@ -65,13 +106,19 @@ func TestListAllDatasets(t *testing.T) {
 	limiter := rate.NewLimiter(rate.Inf, 0)
 
 	// check that listing a few pages works
-	fakeBQ.pages = makePages("project", 3, 2)
+	fakeBQ.datasetTables = map[string][]string{
+		"ds0": []string{},
+		"ds1": []string{},
+		"ds2": []string{},
+		"ds3": []string{},
+		"ds4": []string{},
+	}
 	datasets, err := listAllDatasets(fakeBQ, "project", limiter)
-	if len(datasets) != 6 || err != nil {
+	if len(datasets) != 5 || err != nil {
 		t.Fatal(datasets, err)
 	}
-	if datasets[5].DatasetReference.DatasetId != "ds5" {
-		t.Error(datasets[5].DatasetReference)
+	if datasets[4].DatasetReference.DatasetId != "ds4" {
+		t.Error(datasets[4].DatasetReference)
 	}
 
 	// check that an error returns the error
@@ -88,7 +135,7 @@ func TestListAllDatasets(t *testing.T) {
 	start := time.Now()
 	datasets, err = listAllDatasets(fakeBQ, "project", msLimiter)
 	end := time.Now()
-	if len(datasets) != 6 || err != nil {
+	if len(datasets) != 5 || err != nil {
 		t.Error(datasets, err)
 	}
 	if end.Sub(start) < 2*time.Millisecond {
@@ -96,9 +143,37 @@ func TestListAllDatasets(t *testing.T) {
 	}
 
 	// check that we fail if we return too many datasets
-	fakeBQ.pages = makePages("project", 2, maxDatasets)
+	for i := 0; i < maxDatasets+1; i++ {
+		dsId := "ds" + strconv.Itoa(i)
+		fakeBQ.datasetTables[dsId] = []string{}
+	}
 	datasets, err = listAllDatasets(fakeBQ, "project", limiter)
 	if datasets != nil || err == nil {
 		t.Error(datasets, err)
+	}
+}
+
+func TestGetAllTables(t *testing.T) {
+	fakeBQ := &fakeBigQueryAPI{}
+	fakeBQ.datasetTables = map[string][]string{
+		"ds0": []string{"tableA", "tableB", "tableC"},
+		"ds1": []string{"tableZ"},
+	}
+	limiter := rate.NewLimiter(rate.Inf, 0)
+
+	tables, err := getAllTables(fakeBQ, "project", limiter)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(tables) != 4 {
+		t.Error(tables)
+	}
+	names := []string{}
+	for _, t := range tables {
+		names = append(names, t.TableReference.TableId)
+	}
+	if !reflect.DeepEqual(names, []string{"tableA", "tableB", "tableC", "tableZ"}) {
+		t.Error(names)
 	}
 }
