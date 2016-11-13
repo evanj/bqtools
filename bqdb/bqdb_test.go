@@ -51,4 +51,14 @@ func TestRegister(t *testing.T) {
 	if !reflect.DeepEqual(u2, user) {
 		t.Error(u2, user)
 	}
+
+	// query for a not found id
+	u2, err = GetUserByID(dbmap, -1)
+	if !(u2 == nil && err == nil) {
+		t.Error(u2, err)
+	}
+	u2, err = GetUserByAccessToken(dbmap, "does not exist")
+	if !(u2 == nil && err == nil) {
+		t.Error(u2, err)
+	}
 }
