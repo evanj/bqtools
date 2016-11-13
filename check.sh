@@ -6,9 +6,11 @@ set -x  # echo
 
 # compile and install test packages and depenencies (faster future tests)
 go test -race -v -i ./...
-go test -race -v ./...
+go test -race -v ./... || (echo "FAILED" && exit 1)
 go vet ./...
 go build bqcost.go
 
-# currently too noisy
+# currently too noisy TODO: enable
 #golint ./...
+
+echo "PASSED"
