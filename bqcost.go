@@ -35,6 +35,10 @@ const cookieEncryptionKeyLength = 32
 var cookieHashKey = mustDecodeHex("7b78e1662b9c4451a1b778814d0ae766cb3bcc521f87d38d126cd66cb37fcd7684c7eea08141e04b6ce5540c9bcd10ffe136a6711b24505b8813b6acefd3cfe2")
 var cookieEncryptionKey = mustDecodeHex("3e385efa8cf1038b57f05091803282f9d0c0505c182831e301111bd33db8c9fe")
 
+// https://cloud.google.com/bigquery/pricing#storage
+const dollarsPerBytePerMonth = 0.02 / 1024.0 / 1024.0 / 1024.0
+const maxTopResults = 20
+
 func mustDecodeHex(hexString string) []byte {
 	out, err := hex.DecodeString(hexString)
 	if err != nil {
@@ -132,31 +136,48 @@ func listProjects(w http.ResponseWriter, r *http.Request, client *http.Client) {
 }
 
 type storageUsage struct {
-	Percent float64
-	Bytes   int64
-	ID      string
+	Bytes int64
+	ID    string
+}
+
+func (s *storageUsage) Percent(total int64) float64 {
+	return float64(s.Bytes) * 100.0 / float64(total)
+}
+
+func (s *storageUsage) DollarsPerMonth() float64 {
+	return float64(s.Bytes) * dollarsPerBytePerMonth
 }
 
 type projectIndexVars struct {
 	FriendlyName   string
 	ProjectID      string
+	TotalBytes     int64
 	DatasetStorage []*storageUsage
 	TableStorage   []*storageUsage
+}
+
+func (p *projectIndexVars) TotalCost() float64 {
+	return float64(p.TotalBytes) * dollarsPerBytePerMonth
 }
 
 var projectIndexTemplate = template.Must(template.New("projectIndex").Parse(`<html><head>
 <title>Project {{.FriendlyName}} ({{.ProjectID}})</title>
 </head>
 <body>
+<h1>{{.ProjectID}}{{with .FriendlyName}}: {{.}}{{end}}</h1>
+{{$totalBytes := .TotalBytes}}
+<p><b>Total Bytes: {{$totalBytes}}<br>
+Total Cost: ${{printf "%.2f" .TotalCost}}/month</b></p>
+
 <h1>Datasets</h1>
 <table>
 <thead>
-<tr><th>Percent Storage</th><th>Storage</th><th>ID</th></tr>
+<tr><th>Percent</th><th>$/Month</th><th>Storage</th><th>ID</th></tr>
 </thead>
 
 <tbody>
 {{range .DatasetStorage}}
-<tr><td>{{printf "%.1f%%" .Percent}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
+<tr><td>{{printf "%.1f%%" (.Percent $totalBytes)}}</td><td>{{printf "$%.2f" .DollarsPerMonth}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
 {{end}}
 </tbody>
 </table>
@@ -164,17 +185,43 @@ var projectIndexTemplate = template.Must(template.New("projectIndex").Parse(`<ht
 <h1>Tables</h1>
 <table>
 <thead>
-<tr><th>Percent Storage</th><th>Storage</th><th>ID</th></tr>
+<tr><th>Percent</th><th>$/Month</th><th>Storage</th><th>ID</th></tr>
 </thead>
 
 <tbody>
 {{range .TableStorage}}
-<tr><td>{{printf "%.1f%%" .Percent}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
+<tr><td>{{printf "%.1f%%" (.Percent $totalBytes)}}</td><td>{{printf "$%.2f" .DollarsPerMonth}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
 {{end}}
 </tbody>
 </table>
 </body>
 </html>`))
+
+func queryProject(dbmap *gorp.DbMap, userID int64, projectID string) (*projectIndexVars, error) {
+	total, err := dbmap.SelectInt("SELECT SUM(NumBytes) FROM 'Table' WHERE UserID=? AND ProjectID=?",
+		userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	pageVariables := &projectIndexVars{ProjectID: projectID, TotalBytes: total}
+	// TODO: Set FriendlyName
+	_, err = dbmap.Select(&pageVariables.DatasetStorage,
+		`SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM 'Table'
+		WHERE UserID=? AND ProjectID=? GROUP BY ID ORDER BY Bytes DESC LIMIT ?`,
+		userID, projectID, maxTopResults)
+	if err != nil {
+		return nil, err
+	}
+	_, err = dbmap.Select(&pageVariables.TableStorage,
+		`SELECT DatasetID || '.' || TableID AS ID, NumBytes AS Bytes FROM 'Table'
+		WHERE UserID=? AND ProjectID=? ORDER BY Bytes DESC LIMIT ?`,
+		userID, projectID, maxTopResults)
+	if err != nil {
+		return nil, err
+	}
+
+	return pageVariables, nil
+}
 
 func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oauth2.Token,
 	projectID string) error {
@@ -191,31 +238,10 @@ func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oau
 		}
 	}
 
-	pageVariables := &projectIndexVars{}
-	_, err = s.dbmap.Select(&pageVariables.DatasetStorage, `SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM 'Table'
-		WHERE UserID=? AND ProjectID=? GROUP BY ID`, user.ID, projectID)
+	pageVariables, err := queryProject(s.dbmap, user.ID, projectID)
 	if err != nil {
 		return err
 	}
-	_, err = s.dbmap.Select(&pageVariables.TableStorage, `SELECT DatasetID || '.' || TableID AS ID, NumBytes AS Bytes FROM 'Table'
-		WHERE UserID=? AND ProjectID=?`, user.ID, projectID)
-	if err != nil {
-		return err
-	}
-
-	// total bytes, compute percentages
-	totalBytes := int64(0)
-	for _, d := range pageVariables.DatasetStorage {
-		totalBytes += d.Bytes
-	}
-	percentageMultiplier := 1.0 / (float64(totalBytes) / 100.0)
-	for _, d := range pageVariables.DatasetStorage {
-		d.Percent = float64(d.Bytes) * percentageMultiplier
-	}
-	for _, t := range pageVariables.TableStorage {
-		t.Percent = float64(t.Bytes) * percentageMultiplier
-	}
-
 	return projectIndexTemplate.Execute(w, pageVariables)
 }
 

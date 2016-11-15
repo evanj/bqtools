@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -149,5 +150,88 @@ func TestSaveTables(t *testing.T) {
 	}
 	if int(count) != len(tables) {
 		t.Error(count, len(tables))
+	}
+}
+
+func TestProjectReport(t *testing.T) {
+	dbmap := newTestDB()
+	defer dbmap.Db.Close()
+
+	table := &bqdb.Table{}
+	table.UserID = 1
+	table.ProjectID = "p"
+	table.DatasetID = "d1"
+	table.TableID = "a"
+	table.NumBytes = 1234
+	err := dbmap.Insert(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.TableID = "b"
+	table.NumBytes = 500000
+	err = dbmap.Insert(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const bigTableBytes = 1000000
+	table.NumBytes = bigTableBytes
+	table.DatasetID = "d2"
+	const numExtraEntities = 50
+	for i := 0; i < numExtraEntities; i++ {
+		table.TableID = "table" + strconv.Itoa(i)
+		err = dbmap.Insert(table)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < numExtraEntities; i++ {
+		table.DatasetID = "extra" + strconv.Itoa(i)
+		table.TableID = "table"
+		table.NumBytes = 20
+		err = dbmap.Insert(table)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const totalBytes = bigTableBytes*numExtraEntities + 500000 + 1234 + 20*numExtraEntities
+
+	vars, err := queryProject(dbmap, 1, "p")
+	if len(vars.DatasetStorage) != maxTopResults {
+		t.Fatal(vars.DatasetStorage)
+	}
+	if vars.DatasetStorage[0].Bytes < vars.DatasetStorage[1].Bytes {
+		t.Error("datasets must be sorted", vars.DatasetStorage[0], vars.DatasetStorage[1])
+	}
+	if len(vars.TableStorage) != maxTopResults {
+		t.Fatal(vars.TableStorage)
+	}
+	if vars.TableStorage[0].Bytes < vars.TableStorage[1].Bytes {
+		t.Error("datasets must be sorted", vars.TableStorage[0], vars.TableStorage[1])
+	}
+	const expectedPercentage = float64(bigTableBytes) * 100.0 / float64(totalBytes)
+	if vars.TotalBytes != totalBytes {
+		t.Errorf("expected total bytes %d got total bytes %d", totalBytes, vars.TotalBytes)
+	}
+	if vars.TableStorage[0].Percent(vars.TotalBytes) != expectedPercentage {
+		t.Errorf("table %s percentage %f != expected %f",
+			vars.TableStorage[0].ID, vars.TableStorage[0].Percent(vars.TotalBytes), expectedPercentage)
+	}
+
+	// TODO: Verify that rendering the template actually works
+	u := &bqdb.User{ID: 1, AccessToken: "token"}
+	err = dbmap.Insert(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := server{nil, dbmap, nil}
+	w := httptest.NewRecorder()
+	err = s.projectIndex(w, nil, &oauth2.Token{AccessToken: u.AccessToken}, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<td>d2.table0</td>") {
+		t.Error("did not render template?")
+		t.Error(body)
 	}
 }
