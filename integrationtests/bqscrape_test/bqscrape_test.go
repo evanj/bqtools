@@ -28,12 +28,17 @@ func TestListAllTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{}
-	for _, t := range tables {
-		names = append(names, t.Id)
+	ids := []string{}
+	tableIDs := []string{}
+	for _, table := range tables {
+		ids = append(ids, table.Id)
+		tableIDs = append(tableIDs, table.TableReference.TableId)
 	}
-	if !reflect.DeepEqual(names, []string{"bigquery-tools:github.event_sample"}) {
-		t.Error(names)
+	if !reflect.DeepEqual(ids, []string{"bigquery-tools:github.event_sample"}) {
+		t.Error(ids)
+	}
+	if !reflect.DeepEqual(tableIDs, []string{"event_sample"}) {
+		t.Error(tableIDs)
 	}
 }
 
@@ -43,14 +48,19 @@ func TestGetAllTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	names := []string{}
+	ids := []string{}
+	tableIDs := []string{}
 	for _, table := range tables {
-		names = append(names, table.Id)
+		ids = append(ids, table.Id)
+		tableIDs = append(tableIDs, table.TableReference.TableId)
 		if table.NumBytes <= 0 {
 			t.Error("table has no bytes?", table.Id, table.NumBytes)
 		}
 	}
-	if !reflect.DeepEqual(names, []string{"bigquery-tools:github.event_sample"}) {
-		t.Error(names)
+	if !reflect.DeepEqual(ids, []string{"bigquery-tools:github.event_sample"}) {
+		t.Error(ids)
+	}
+	if !reflect.DeepEqual(tableIDs, []string{"event_sample"}) {
+		t.Error(tableIDs)
 	}
 }

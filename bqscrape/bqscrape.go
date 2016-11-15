@@ -56,7 +56,7 @@ func (a *bigQueryAPI) getTable(projectId string, datasetId string, tableId strin
 	// TODO: filter attributes?
 	return a.bq.Tables.Get(projectId, datasetId, tableId).
 		// created with the API fields editor
-		Fields("creationTime,description,etag,expirationTime,friendlyName,id,kind,lastModifiedTime,numBytes,numLongTermBytes,numRows,streamingBuffer,type").
+		Fields("creationTime,description,expirationTime,friendlyName,id,kind,lastModifiedTime,numBytes,numLongTermBytes,numRows,streamingBuffer,tableReference,type").
 		Do()
 }
 
