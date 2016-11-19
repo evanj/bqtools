@@ -118,6 +118,10 @@ func TestProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// had a bug that the progress bar wasn't rendered correctly
+	if !strings.Contains(buf.String(), `value="41" max="100"`) {
+		t.Error(buf.String())
+	}
 	if !strings.Contains(buf.String(), "name (id)") {
 		t.Error(buf.String())
 	}

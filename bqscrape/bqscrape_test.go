@@ -153,6 +153,18 @@ func TestListAllDatasets(t *testing.T) {
 	}
 }
 
+type progressReport struct {
+	percent int
+	message string
+}
+type FakeProgressReporter struct {
+	progress []progressReport
+}
+
+func (p *FakeProgressReporter) Progress(percent int, message string) {
+	p.progress = append(p.progress, progressReport{percent, message})
+}
+
 func TestGetAllTables(t *testing.T) {
 	fakeBQ := &fakeBigQueryAPI{}
 	fakeBQ.datasetTables = map[string][]string{
@@ -161,7 +173,8 @@ func TestGetAllTables(t *testing.T) {
 	}
 	limiter := rate.NewLimiter(rate.Inf, 0)
 
-	tables, err := getAllTables(fakeBQ, "project", limiter)
+	progress := &FakeProgressReporter{}
+	tables, err := getAllTables(fakeBQ, "project", limiter, progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,5 +188,35 @@ func TestGetAllTables(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"tableA", "tableB", "tableC", "tableZ"}) {
 		t.Error(names)
+	}
+
+	expected := []progressReport{
+		{0, "Listing tables..."},
+		{10, "Reading table metadata (completed 0/4 tables)"},
+		{100, "Complete"},
+	}
+	if !reflect.DeepEqual(expected, progress.progress) {
+		t.Error(progress.progress)
+	}
+}
+
+func TestEstimateProgress(t *testing.T) {
+	tests := []struct {
+		listed int
+		total  int
+		report progressReport
+	}{
+		{0, 100, progressReport{10, "Reading table metadata (completed 0/100 tables)"}},
+		{50, 100, progressReport{55, "Reading table metadata (completed 50/100 tables)"}},
+		{100, 100, progressReport{100, "Reading table metadata (completed 100/100 tables)"}},
+	}
+
+	for i, test := range tests {
+		percent, message := estimateListTablesProgress(test.listed, test.total)
+		report := progressReport{percent, message}
+		if report != test.report {
+			t.Errorf("%d: estimateListTablesProgress(%d, %d) = %v ; expected %v",
+				i, test.listed, test.total, report, test.report)
+		}
 	}
 }

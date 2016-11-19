@@ -9,10 +9,12 @@ import (
 )
 
 type User struct {
-	ID           int64  `db:",primarykey,autoincrement"`
-	AccessToken  string `db:",notnull"`
-	IsLoading    bool   `db:",notnull"`
-	LoadingError string `db:",notnull"`
+	ID             int64  `db:",primarykey,autoincrement"`
+	AccessToken    string `db:",notnull"`
+	IsLoading      bool   `db:",notnull"`
+	LoadingPercent int    `db:",notnull"`
+	LoadingMessage string `db:",notnull"`
+	LoadingError   string `db:",notnull"`
 }
 
 // type Project struct {

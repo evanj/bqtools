@@ -46,10 +46,11 @@ func TestGetUserOrStartLoading(t *testing.T) {
 		return nil
 	}
 
+	// creates a new user: returns errIsLoading but also the user
 	server := &server{nil, dbmap, loader}
 	token := &oauth2.Token{AccessToken: "fake_access_token"}
 	user, err := server.getUserOrStartLoading(token, "project")
-	if user != nil || err != errIsLoading {
+	if user == nil || err != errIsLoading || user.AccessToken != token.AccessToken {
 		t.Fatal(user, err)
 	}
 	if loaderUser.AccessToken != token.AccessToken || loaderUser.IsLoading != true || loaderUser.ID <= 0 {
@@ -68,9 +69,9 @@ func TestGetUserOrStartLoading(t *testing.T) {
 	loadedID := loaderUser.ID
 	loaderUser = nil
 
-	// calling it again with the same token should not call loader
+	// calling it again with the same token should not call loader, but should return user
 	user, err = server.getUserOrStartLoading(token, "project")
-	if user != nil || err != errIsLoading {
+	if user == nil || err != errIsLoading || user.AccessToken != token.AccessToken {
 		t.Fatal(user, err)
 	}
 	if loaderUser != nil {
@@ -212,9 +213,10 @@ func TestProjectReport(t *testing.T) {
 	if vars.TotalBytes != totalBytes {
 		t.Errorf("expected total bytes %d got total bytes %d", totalBytes, vars.TotalBytes)
 	}
-	if vars.TableStorage[0].Percent(vars.TotalBytes) != expectedPercentage {
+	if vars.TableStorage[0].PercentValue(vars.TotalBytes) != expectedPercentage {
 		t.Errorf("table %s percentage %f != expected %f",
-			vars.TableStorage[0].ID, vars.TableStorage[0].Percent(vars.TotalBytes), expectedPercentage)
+			vars.TableStorage[0].ID, vars.TableStorage[0].PercentValue(vars.TotalBytes),
+			expectedPercentage)
 	}
 
 	// TODO: Verify that rendering the template actually works
@@ -230,8 +232,59 @@ func TestProjectReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "<td>d2.table0</td>") {
+	if !strings.Contains(body, ">d2.table0<") {
 		t.Error("did not render template?")
 		t.Error(body)
+	}
+}
+
+func TestLoading(t *testing.T) {
+	dbmap := newTestDB()
+	defer dbmap.Db.Close()
+
+	u := &bqdb.User{}
+	u.AccessToken = "token"
+	u.IsLoading = false
+	err := dbmap.Insert(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// progress on a user that is not loading: don't update
+	err = progressReport(dbmap, u.ID, 55, "foo message")
+	if err == nil || !strings.Contains(err.Error(), "not loading") {
+		t.Error(err)
+	}
+
+	// correct progress
+	u.IsLoading = true
+	_, err = dbmap.Update(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = progressReport(dbmap, u.ID, 55, "foo message")
+	if err != nil {
+		t.Error(err)
+	}
+
+	// re-read the user
+	u, err = bqdb.GetUserByID(dbmap, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !(u.LoadingPercent == 55 && u.LoadingMessage == "foo message") {
+		t.Error(u)
+	}
+
+	// projectIndex outputs the data
+	s := server{dbmap: dbmap}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/projects/foo", nil)
+	err = s.projectIndex(w, r, &oauth2.Token{AccessToken: "token"}, "foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(w.Body.String(), "foo message") {
+		t.Error(w.Body.String())
 	}
 }

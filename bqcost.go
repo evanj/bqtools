@@ -154,7 +154,7 @@ func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oau
 	user, err := s.getUserOrStartLoading(token, projectID)
 	if err != nil {
 		if err == errIsLoading {
-			return templates.Loading(w, 67, "hello progress message")
+			return templates.Loading(w, user.LoadingPercent, user.LoadingMessage)
 		} else {
 			return err
 		}
@@ -167,11 +167,14 @@ func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oau
 	return templates.Project(w, pageVariables)
 }
 
+// TODO: Remove: see comment below
 var errIsLoading = errors.New("loading data from bigquery")
 
 // Returns a user or calls loader() to transactionally start loading. loader cannot block, but if
 // it returns as error the user will not be inserted. If loader starts a goroutine, it should copy
 // data from user to avoid data races.
+// TODO: This should not return errIsLoading; it should be the caller's responsibility to check
+// if the user is loading
 func (s *server) getUserOrStartLoading(token *oauth2.Token, projectID string) (
 	*bqdb.User, error) {
 
@@ -211,12 +214,12 @@ func (s *server) getUserOrStartLoading(token *oauth2.Token, projectID string) (
 			return nil, err
 		}
 		log.Printf("bqcost: token %s loading started", token.AccessToken)
-		return nil, errIsLoading
+		return user, errIsLoading
 	}
 
 	log.Printf("bqcost: found user %v", user)
 	if user.IsLoading {
-		return nil, errIsLoading
+		return user, errIsLoading
 	}
 	if user.LoadingError != "" {
 		return nil, errors.New(user.LoadingError)
@@ -274,14 +277,54 @@ func (s *server) localhostLoaderGoroutine(userID int64, accessToken string, proj
 		userID, accessToken, projectID)
 }
 
-func (s *server) loadBigqueryData(userID int64, accessToken string, projectId string) error {
+func progressReport(dbmap *gorp.DbMap, userID int64, percent int, message string) error {
+	// super inefficient since we run this in a transaction
+	txn, err := dbmap.Begin()
+	if err != nil {
+		return err
+	}
+	defer txn.Rollback()
+
+	u, err := bqdb.GetUserByID(txn, userID)
+	if err != nil {
+		return err
+	}
+
+	if !u.IsLoading {
+		return fmt.Errorf("bqcost.progressReport: userID %d is not loading", userID)
+	}
+
+	u.LoadingPercent = percent
+	u.LoadingMessage = message
+	_, err = txn.Update(u)
+	if err != nil {
+		return err
+	}
+	return txn.Commit()
+}
+
+type userProgressReporter struct {
+	dbmap  *gorp.DbMap
+	userID int64
+}
+
+func (u *userProgressReporter) Progress(percent int, message string) {
+	log.Printf("bqcost: progress report user %d: %d%% %s", u.userID, percent, message)
+	err := progressReport(u.dbmap, u.userID, percent, message)
+	if err != nil {
+		log.Printf("bqcost: error in progress report: %s", err.Error())
+	}
+}
+
+func (s *server) loadBigqueryData(userID int64, accessToken string, projectID string) error {
 	client := s.auth.Client(context.TODO(), &oauth2.Token{AccessToken: accessToken})
 	bq, err := bigquery.New(client)
 	if err != nil {
 		return err
 	}
 
-	tables, err := bqscrape.GetAllTables(bq, projectId)
+	progress := &userProgressReporter{s.dbmap, userID}
+	tables, err := bqscrape.GetAllTables(bq, projectID, progress)
 	if err != nil {
 		return err
 	}

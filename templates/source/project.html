@@ -36,7 +36,7 @@
     <div class="column content is-narrow">
       <h1>Largest Datasets</h1>
 
-      <table class="table" style="width: auto;">
+      <table class="table">
         <thead>
           <tr>
             <th></th>
@@ -48,14 +48,17 @@
         </thead>
 
         <tbody>
+          {{$projectID := .ID}}
           {{$totalBytes := .TotalBytes}}
           {{range .DatasetStorage}}
           <tr>
-            <td style="vertical-align: middle; width: 100px;"><progress class="progress is-small" value="15" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress></td>
-            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}</td>
+            <td style="vertical-align: middle; width: 100px;">
+              <progress class="progress is-small" value="{{.Percent $totalBytes}}" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress>
+            </td>
+            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}%</td>
             <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
             <td style="text-align: right;">{{.HumanBytes}}</td>
-            <td>{{.ID}}</td>
+            <td><a href="https://bigquery.cloud.google.com/dataset/{{$projectID}}:{{.ID}}">{{.ID}}</a></td>
           </tr>
           {{end}}
         </tbody>
@@ -64,7 +67,7 @@
 
       <h1>Largest Tables</h1>
 
-      <table class="table" style="width: auto;">
+      <table class="table">
         <thead>
           <tr>
             <th></th>
@@ -78,11 +81,13 @@
         <tbody>
           {{range .TableStorage}}
           <tr>
-            <td style="vertical-align: middle; width: 100px;"><progress class="progress is-small" value="15" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress></td>
-            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}</td>
+            <td style="vertical-align: middle; width: 100px;">
+              <progress class="progress is-small" value="{{.Percent $totalBytes}}" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress>
+            </td>
+            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}%</td>
             <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
             <td style="text-align: right;">{{.HumanBytes}}</td>
-            <td>{{.ID}}</td>
+            <td><a href="https://bigquery.cloud.google.com/table/{{$projectID}}:{{.ID}}?tab=details">{{.ID}}</a></td>
           </tr>
           {{end}}
         </tbody>

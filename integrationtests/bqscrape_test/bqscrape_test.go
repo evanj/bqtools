@@ -44,7 +44,7 @@ func TestListAllTables(t *testing.T) {
 
 func TestGetAllTables(t *testing.T) {
 	bq := newDefaultBQ()
-	tables, err := bqscrape.GetAllTables(bq, "bigquery-tools")
+	tables, err := bqscrape.GetAllTables(bq, "bigquery-tools", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

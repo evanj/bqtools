@@ -14,7 +14,7 @@ import (
 const requestPerSecondLimit = rate.Limit(50)
 const maxConcurrentAPIRequests = 10
 const maxDatasets = 100
-const maxTables = 3000
+const maxTables = 5000
 
 // https://cloud.google.com/bigquery/docs/data#paging-through-list-results
 const collectionMaxResults = 1000
@@ -131,8 +131,25 @@ func listAllTables(bqAPI api, projectId string, limiter *rate.Limiter) (
 	return tables, nil
 }
 
+// assume listing datasets and tables is 10% of the work
+const listTablesPercent = 10
+const progressTableCount = 100
+
+func estimateListTablesProgress(tablesListed int, totalTables int) (int, string) {
+	fraction := float64(tablesListed) / float64(totalTables)
+	percent := listTablesPercent + int((100-listTablesPercent)*fraction+0.5)
+	message := fmt.Sprintf("Reading table metadata (completed %d/%d tables)",
+		tablesListed, totalTables)
+	return percent, message
+}
+
 // Fetches all metadata from all bigquery tables from projectId. TODO: Parallelize
-func getAllTables(bqAPI api, projectId string, limiter *rate.Limiter) ([]*bigquery.Table, error) {
+func getAllTables(bqAPI api, projectId string, limiter *rate.Limiter, progress ProgressReporter) (
+	[]*bigquery.Table, error) {
+
+	const listTablesPercent = 10
+
+	progress.Progress(0, "Listing tables...")
 	tables, err := listAllTables(bqAPI, projectId, limiter)
 	if err != nil {
 		return nil, err
@@ -140,12 +157,19 @@ func getAllTables(bqAPI api, projectId string, limiter *rate.Limiter) ([]*bigque
 
 	tableData := make([]*bigquery.Table, len(tables))
 	for i, table := range tables {
+		// report progress every 100 tables
+		if i%progressTableCount == 0 {
+			percent, message := estimateListTablesProgress(i, len(tables))
+			progress.Progress(percent, message)
+		}
+
 		tableData[i], err = bqAPI.getTable(table.TableReference.ProjectId, table.TableReference.DatasetId,
 			table.TableReference.TableId)
 		if err != nil {
 			return nil, err
 		}
 	}
+	progress.Progress(100, "Complete")
 	return tableData, nil
 }
 
@@ -162,8 +186,21 @@ func ListAllTables(bq *bigquery.Service, projectId string) ([]*bigquery.TableLis
 	return listAllTables(bqAPI, projectId, limiter)
 }
 
+type ProgressReporter interface {
+	Progress(percent int, message string)
+}
+
+type NilProgressReporter struct{}
+
+func (n *NilProgressReporter) Progress(percent int, message string) {}
+
 // Fetches all metadata from all bigquery tables from projectId. TODO: Parallelize
-func GetAllTables(bq *bigquery.Service, projectId string) ([]*bigquery.Table, error) {
+func GetAllTables(bq *bigquery.Service, projectId string, progress ProgressReporter) (
+	[]*bigquery.Table, error) {
+
 	bqAPI, limiter := productionConfig(bq)
-	return getAllTables(bqAPI, projectId, limiter)
+	if progress == nil {
+		progress = &NilProgressReporter{}
+	}
+	return getAllTables(bqAPI, projectId, limiter, progress)
 }

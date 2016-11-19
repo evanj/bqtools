@@ -90,8 +90,13 @@ type StorageUsage struct {
 	ID    string
 }
 
-func (s *StorageUsage) Percent(total int64) float64 {
+func (s *StorageUsage) PercentValue(total int64) float64 {
 	return float64(s.Bytes) * 100.0 / float64(total)
+}
+
+// Returns the percentage rounded to the nearest whole number and formatted
+func (s *StorageUsage) Percent(total int64) string {
+	return strconv.FormatFloat(s.PercentValue(total), 'f', 0, 64)
 }
 
 func (s *StorageUsage) DollarsPerMonth() float64 {
