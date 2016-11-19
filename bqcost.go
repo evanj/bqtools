@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html/template"
 	"log"
 	"net/http"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/evanj/bqbackup/bqdb"
 	"github.com/evanj/bqbackup/bqscrape"
 	"github.com/evanj/bqbackup/googlelogin"
+	"github.com/evanj/bqbackup/templates"
 )
 
 // TODO: Load these in a configuration file!
@@ -35,8 +35,6 @@ const cookieEncryptionKeyLength = 32
 var cookieHashKey = mustDecodeHex("7b78e1662b9c4451a1b778814d0ae766cb3bcc521f87d38d126cd66cb37fcd7684c7eea08141e04b6ce5540c9bcd10ffe136a6711b24505b8813b6acefd3cfe2")
 var cookieEncryptionKey = mustDecodeHex("3e385efa8cf1038b57f05091803282f9d0c0505c182831e301111bd33db8c9fe")
 
-// https://cloud.google.com/bigquery/pricing#storage
-const dollarsPerBytePerMonth = 0.02 / 1024.0 / 1024.0 / 1024.0
 const maxTopResults = 20
 
 func mustDecodeHex(hexString string) []byte {
@@ -54,13 +52,14 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, `<html><body>
-	<p>To use the BigQuery cost tool, you will need to provide read-only access to BigQuery.</p>
-	<p><a href="/start">Provide access to Google BigQuery</a></p>
-	</body></html>`)
+	err := templates.Index(w)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func handleNoAuth(w http.ResponseWriter, r *http.Request) {
+	// TODO: Make a pretty template
 	fmt.Fprintf(w, `<html><body>
 	<p>Unauthenticated: That feature requires access to Google BigQuery</p>
 	<p><a href="/start">Provide access to Google BigQuery</a></p>
@@ -103,116 +102,41 @@ func (s *server) projectsHandler(w http.ResponseWriter, r *http.Request, token *
 	}
 }
 
-var listProjectsTemplate = template.Must(template.New("list").Parse(`<html><head>
-<title>Big Query Projects</title>
-</head>
-<body>
-<h1>Select a Project</h1>
-<ul>
-{{range .Projects}}
-<li><a href="/projects/{{.Id}}">{{.FriendlyName}} ({{.Id}})</a></li>
-{{end}}
-</ul>
-</body>
-</html>`))
-
 func listProjects(w http.ResponseWriter, r *http.Request, client *http.Client) {
 	bq, err := bigquery.New(client)
 	if err != nil {
 		panic(err)
 	}
-	result, err := bq.Projects.List().Do()
+	result, err := bq.Projects.List().MaxResults(500).Do()
 	if err != nil {
 		panic(err)
 	}
 
 	if result.NextPageToken != "" {
-		panic("next page token")
+		panic("projects next page token: not supported yet")
 	}
-	err = listProjectsTemplate.Execute(w, result)
+	err = templates.SelectProject(w, result)
 	if err != nil {
 		panic(err)
 	}
 }
 
-type storageUsage struct {
-	Bytes int64
-	ID    string
-}
-
-func (s *storageUsage) Percent(total int64) float64 {
-	return float64(s.Bytes) * 100.0 / float64(total)
-}
-
-func (s *storageUsage) DollarsPerMonth() float64 {
-	return float64(s.Bytes) * dollarsPerBytePerMonth
-}
-
-type projectIndexVars struct {
-	FriendlyName   string
-	ProjectID      string
-	TotalBytes     int64
-	DatasetStorage []*storageUsage
-	TableStorage   []*storageUsage
-}
-
-func (p *projectIndexVars) TotalCost() float64 {
-	return float64(p.TotalBytes) * dollarsPerBytePerMonth
-}
-
-var projectIndexTemplate = template.Must(template.New("projectIndex").Parse(`<html><head>
-<title>Project {{.FriendlyName}} ({{.ProjectID}})</title>
-</head>
-<body>
-<h1>{{.ProjectID}}{{with .FriendlyName}}: {{.}}{{end}}</h1>
-{{$totalBytes := .TotalBytes}}
-<p><b>Total Bytes: {{$totalBytes}}<br>
-Total Cost: ${{printf "%.2f" .TotalCost}}/month</b></p>
-
-<h1>Datasets</h1>
-<table>
-<thead>
-<tr><th>Percent</th><th>$/Month</th><th>Storage</th><th>ID</th></tr>
-</thead>
-
-<tbody>
-{{range .DatasetStorage}}
-<tr><td>{{printf "%.1f%%" (.Percent $totalBytes)}}</td><td>{{printf "$%.2f" .DollarsPerMonth}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
-{{end}}
-</tbody>
-</table>
-
-<h1>Tables</h1>
-<table>
-<thead>
-<tr><th>Percent</th><th>$/Month</th><th>Storage</th><th>ID</th></tr>
-</thead>
-
-<tbody>
-{{range .TableStorage}}
-<tr><td>{{printf "%.1f%%" (.Percent $totalBytes)}}</td><td>{{printf "$%.2f" .DollarsPerMonth}}</td><td>{{.Bytes}}</td><td>{{.ID}}</td></tr>
-{{end}}
-</tbody>
-</table>
-</body>
-</html>`))
-
-func queryProject(dbmap *gorp.DbMap, userID int64, projectID string) (*projectIndexVars, error) {
+func queryProject(dbmap *gorp.DbMap, userID int64, projectID string) (*templates.ProjectData, error) {
 	total, err := dbmap.SelectInt("SELECT SUM(NumBytes) FROM 'Table' WHERE UserID=? AND ProjectID=?",
 		userID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	pageVariables := &projectIndexVars{ProjectID: projectID, TotalBytes: total}
-	// TODO: Set FriendlyName
-	_, err = dbmap.Select(&pageVariables.DatasetStorage,
+	// TODO: Set FriendlyName correctly
+	data := &templates.ProjectData{ID: projectID, FriendlyName: projectID, TotalBytes: total}
+	_, err = dbmap.Select(&data.DatasetStorage,
 		`SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM 'Table'
 		WHERE UserID=? AND ProjectID=? GROUP BY ID ORDER BY Bytes DESC LIMIT ?`,
 		userID, projectID, maxTopResults)
 	if err != nil {
 		return nil, err
 	}
-	_, err = dbmap.Select(&pageVariables.TableStorage,
+	_, err = dbmap.Select(&data.TableStorage,
 		`SELECT DatasetID || '.' || TableID AS ID, NumBytes AS Bytes FROM 'Table'
 		WHERE UserID=? AND ProjectID=? ORDER BY Bytes DESC LIMIT ?`,
 		userID, projectID, maxTopResults)
@@ -220,7 +144,7 @@ func queryProject(dbmap *gorp.DbMap, userID int64, projectID string) (*projectIn
 		return nil, err
 	}
 
-	return pageVariables, nil
+	return data, nil
 }
 
 func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oauth2.Token,
@@ -230,9 +154,7 @@ func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oau
 	user, err := s.getUserOrStartLoading(token, projectID)
 	if err != nil {
 		if err == errIsLoading {
-			w.Header().Set("Content-Type", "text/plain;charset=utf-8")
-			w.Write([]byte("Loading data from BigQuery. Please reload."))
-			return nil
+			return templates.Loading(w, 67, "hello progress message")
 		} else {
 			return err
 		}
@@ -242,7 +164,7 @@ func (s *server) projectIndex(w http.ResponseWriter, r *http.Request, token *oau
 	if err != nil {
 		return err
 	}
-	return projectIndexTemplate.Execute(w, pageVariables)
+	return templates.Project(w, pageVariables)
 }
 
 var errIsLoading = errors.New("loading data from bigquery")

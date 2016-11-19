@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<title>BigQuery Tools: Cost visualization</title>
+</head>
+<body>
+<section class="hero is-primary">
+  <div class="hero-body">
+    <div class="container">
+      <h1 class="title is-1">BigQuery Tools</h1>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="content is-medium container">
+    <h1 class="subtitle">Reading metadata from BigQuery ...</h1>
+    <progress class="progress is-large is-primary" value="{{.Percent}}" max="100">{{.Percent}}%</progress>
+    <p>{{.Message}}</p>
+    <p>(This is currently very slow for large projects; we are working on it)</p>
+  </div>
+</section>
+
+</body>
+</html>

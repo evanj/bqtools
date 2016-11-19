@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<title>BigQuery Tools: Cost visualization</title>
+</head>
+<body>
+<section class="hero is-primary">
+  <div class="hero-body">
+    <div class="container">
+      <h1 class="title is-1">BigQuery Tools</h1>
+      <h2 class="subtitle is-4">Instantly see which datasets, tables and queries cost the most</h2>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="content is-medium container">
+    <h1 class="title">Visualize BigQuery costs</h1>
+    <p>
+    BigQuery Tools shows you what datasets and tables are taking up the most space. We created it for ourselves, but decided to release it for free in case others find it useful.
+    </p>
+  </div>
+</section>
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container has-text-centered">
+      <a href="/start" class="button is-primary is-large">Get Started</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="content is-medium container">
+    <h1 class="title">How it works</h1>
+    <p>BigQuery Tools requests temporary read-only access to BigQuery. It uses the <a href="https://cloud.google.com/bigquery/docs/reference/rest/v2/tables/get">BigQuery Table API</a> to get statistics for all tables in the project you selected. 
+    </p>
+
+    <hr>
+    <h1 class="title">Security</h1>
+    <p>We request the permissions we can: Read-only access to BigQuery (the <a href="http://stackoverflow.com/questions/25967245/what-operations-does-the-bigquery-readonly-scope-allow">bigquery.readonly API scope</a>). We only request <em>temporary</em> access, so we cannot access your project one hour after you close your browser (in <a href="https://developers.google.com/identity/protocols/OAuth2WebServer#offline">OAuth2: <code>access_type=online</code></a>). BigQuery Tools runs in App Engine so Google manages security updates and access control. This data we collect is stored in a <a href="https://cloud.google.com/sql/docs/">Cloud SQL</a> database, so we can compute the information we show you. We delete this data on a daily basis to avoid leaking information.</p>
+
+    <p>Despite taking all of the precautions we can, at the end of the day, you are granting us temporary read-only access to your BigQuery project, so you'll have to trust us and our software. To reduce that risk further, the code is open source. If you are paranoid, you can run your own instance. We can also probably help if you want to run your own instance. Email <a href="mailto:ej@evanjones.ca">Evan (ej@evanjones.ca)</a> if you need help.</p>
+  </div>
+</section>
+
+</body>
+</html>

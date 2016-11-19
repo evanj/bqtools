@@ -1,0 +1,37 @@
+{{define "DisplayProject"}}{{.FriendlyName}}{{if ne .Id .FriendlyName}} ({{.Id}}){{end}}{{end}}
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+<title>BigQuery Tools: Select a project</title>
+</head>
+<body>
+<section class="hero is-primary">
+  <div class="hero-body">
+    <div class="container">
+      <h1 class="title is-1">BigQuery Tools</h1>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="columns is-mobile">
+    <div class="column is-half is-offset-one-quarter">
+      <nav class="panel">
+        <p class="panel-heading">Select a project</p>
+
+        {{range .Projects}}
+        <a class="panel-block is-active" href="/projects/{{.Id}}">
+          <span class="panel-icon"><i class="fa fa-database"></i></span>
+          {{template "DisplayProject" .}}
+        </a>
+        {{end}}
+
+      </nav>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

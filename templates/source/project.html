@@ -1,0 +1,96 @@
+{{define "DisplayProject"}}{{.FriendlyName}}{{if ne .ID .FriendlyName}} ({{.ID}}){{end}}{{end}}
+<!DOCTYPE html>
+<html>
+<head>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<title>BigQuery Tools: {{template "DisplayProject" .}}</title>
+</head>
+<body>
+<section class="hero is-primary">
+  <div class="hero-body">
+    <div class="container">
+      <h1 class="title is-1">BigQuery Tools: {{template "DisplayProject" .}}</h1>
+    </div>
+  </div>
+</section>
+
+<section class="section"><div class="container">
+  <div class="columns">
+    <div class="column is-narrow content">
+      <h1>Totals for {{template "DisplayProject" .}}</h1>
+
+      <table class="table" style="width: auto;">
+        <tr>
+          <th style="width: 100px;">Bytes</th>
+          <td>{{.HumanBytes}}</td>
+        </tr>
+        <tr>
+          <th style="width: 100px;">Cost</th>
+          <td>${{printf "%.2f" .TotalCost}}/month</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="columns">
+    <div class="column content is-narrow">
+      <h1>Largest Datasets</h1>
+
+      <table class="table" style="width: auto;">
+        <thead>
+          <tr>
+            <th></th>
+            <th></th>
+            <th style="text-align: right;">$/Month</th>
+            <th style="text-align: right;">Bytes</th>
+            <th>Dataset ID</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {{$totalBytes := .TotalBytes}}
+          {{range .DatasetStorage}}
+          <tr>
+            <td style="vertical-align: middle; width: 100px;"><progress class="progress is-small" value="15" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress></td>
+            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}</td>
+            <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
+            <td style="text-align: right;">{{.HumanBytes}}</td>
+            <td>{{.ID}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+
+
+      <h1>Largest Tables</h1>
+
+      <table class="table" style="width: auto;">
+        <thead>
+          <tr>
+            <th></th>
+            <th></th>
+            <th style="text-align: right;">$/Month</th>
+            <th style="text-align: right;">Bytes</th>
+            <th>Table ID</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {{range .TableStorage}}
+          <tr>
+            <td style="vertical-align: middle; width: 100px;"><progress class="progress is-small" value="15" max="100" style="width: 100px;">{{.Percent $totalBytes}}</progress></td>
+            <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}</td>
+            <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
+            <td style="text-align: right;">{{.HumanBytes}}</td>
+            <td>{{.ID}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div></section>
+
+
+</body>
+</html>
