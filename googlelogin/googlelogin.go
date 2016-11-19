@@ -80,7 +80,7 @@ func New(clientID string, clientSecret string, redirectURL string, scopes []stri
 			ClientSecret: clientSecret,
 			Endpoint:     google.Endpoint,
 			Scopes:       scopes,
-			RedirectURL:  "http://localhost:8080/oauth2callback",
+			RedirectURL:  redirectURL,
 		},
 		securecookies,
 		noAuthPath}

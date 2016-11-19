@@ -38,7 +38,7 @@ func setupTestHarness() *harness {
 	encryptionKey := make([]byte, cookieEncryptionKeyLength)
 	securecookies := securecookie.New(hashKey, encryptionKey)
 	mux := http.NewServeMux()
-	auth, err := New("clientID", "clientSecret", "http://example.com/redirect", []string{"scope"},
+	auth, err := New("clientID", "clientSecret", "https://example.com/redirect", []string{"scope"},
 		securecookies, "/noauth", mux)
 	if err != nil {
 		panic(err)
@@ -69,6 +69,9 @@ func TestCallback(t *testing.T) {
 	parsed, err := url.Parse(w.Header().Get("Location"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if parsed.Query().Get("redirect_uri") != "https://example.com/redirect" {
+		t.Error(parsed.Query().Get("redirect_uri"))
 	}
 	stateSerialized := parsed.Query().Get("state")
 	if len(stateSerialized) == 0 {
