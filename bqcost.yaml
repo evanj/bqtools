@@ -1,0 +1,12 @@
+runtime: go
+env: flex
+
+resources:
+  cpu: .1
+  memory_gb: 0.5
+
+manual_scaling:
+  instances: 1
+
+beta_settings:
+  cloud_sql_instances: "bigquery-tools:us-central1:bqcost-prod"
