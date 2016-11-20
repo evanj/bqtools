@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -18,12 +17,7 @@ import (
 )
 
 func newTestDB() *gorp.DbMap {
-	db, err := sql.Open("sqlite3", ":memory:")
-	if err != nil {
-		panic(err)
-	}
-	dbmap := &gorp.DbMap{Db: db, Dialect: gorp.SqliteDialect{}}
-	err = bqdb.RegisterAndCreateTablesIfNeeded(dbmap)
+	dbmap, err := bqdb.OpenAndCreateTablesIfNeeded("sqlite3", ":memory:", gorp.SqliteDialect{})
 	if err != nil {
 		panic(err)
 	}
@@ -197,6 +191,9 @@ func TestProjectReport(t *testing.T) {
 	const totalBytes = bigTableBytes*numExtraEntities + 500000 + 1234 + 20*numExtraEntities
 
 	vars, err := queryProject(dbmap, 1, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(vars.DatasetStorage) != maxTopResults {
 		t.Fatal(vars.DatasetStorage)
 	}
@@ -294,3 +291,11 @@ func TestLoading(t *testing.T) {
 		t.Error(w.Body.String())
 	}
 }
+
+// func TestEmptyProject(t *testing.T) {
+// 	t.Error("TODO: empty projects should work")
+// }
+
+// func TestMultipleProjects(t *testing.T) {
+// 	t.Error("TODO: switching projects should work")
+// }

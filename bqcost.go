@@ -1,17 +1,19 @@
 package main
 
 import (
-	"context"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 
+	_ "github.com/GoogleCloudPlatform/cloudsql-proxy/proxy/dialers/mysql"
 	"github.com/go-gorp/gorp"
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/securecookie"
-	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	bigquery "google.golang.org/api/bigquery/v2"
 
@@ -21,22 +23,11 @@ import (
 	"github.com/evanj/bqbackup/templates"
 )
 
-// TODO: Load these in a configuration file!
-// client id and secret for Google OAuth
-const clientID = "329377969161-82blev2kcn2fqhppq6ns78jh67718jvb.apps.googleusercontent.com"
-const clientSecret = "uu9G8NxNLeWbRTgvPgNbG_fl"
-const redirectURL = "http://localhost:8080/oauth2callback"
-
-// See http://www.gorillatoolkit.org/pkg/securecookie
-const cookieHashKeyLength = 64
-const cookieEncryptionKeyLength = 32
-
-// Secure cookies
-var cookieHashKey = mustDecodeHex("7b78e1662b9c4451a1b778814d0ae766cb3bcc521f87d38d126cd66cb37fcd7684c7eea08141e04b6ce5540c9bcd10ffe136a6711b24505b8813b6acefd3cfe2")
-var cookieEncryptionKey = mustDecodeHex("3e385efa8cf1038b57f05091803282f9d0c0505c182831e301111bd33db8c9fe")
-
+const redirectPath = "/oauth2callback"
+const productionHost = "https://bigquery-tools.appspot-preview.com"
 const maxTopResults = 20
 
+// For secure cookies. See http://www.gorillatoolkit.org/pkg/securecookie
 func mustDecodeHex(hexString string) []byte {
 	out, err := hex.DecodeString(hexString)
 	if err != nil {
@@ -122,26 +113,37 @@ func listProjects(w http.ResponseWriter, r *http.Request, client *http.Client) {
 }
 
 func queryProject(dbmap *gorp.DbMap, userID int64, projectID string) (*templates.ProjectData, error) {
-	total, err := dbmap.SelectInt("SELECT SUM(NumBytes) FROM 'Table' WHERE UserID=? AND ProjectID=?",
-		userID, projectID)
+	total, err := bqdb.QueryTotalTableBytes(dbmap, userID, projectID)
 	if err != nil {
 		return nil, err
 	}
+	quotedTable, err := bqdb.QuotedTableForQuery(dbmap, bqdb.Table{})
+	if err != nil {
+		return nil, err
+	}
+
 	// TODO: Set FriendlyName correctly
 	data := &templates.ProjectData{ID: projectID, FriendlyName: projectID, TotalBytes: total}
 	_, err = dbmap.Select(&data.DatasetStorage,
-		`SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM 'Table'
-		WHERE UserID=? AND ProjectID=? GROUP BY ID ORDER BY Bytes DESC LIMIT ?`,
+		"SELECT DatasetID AS ID, SUM(NumBytes) AS Bytes FROM "+quotedTable+
+			" WHERE UserID=? AND ProjectID=? GROUP BY ID ORDER BY Bytes DESC LIMIT ?",
 		userID, projectID, maxTopResults)
 	if err != nil {
 		return nil, err
 	}
-	_, err = dbmap.Select(&data.TableStorage,
-		`SELECT DatasetID || '.' || TableID AS ID, NumBytes AS Bytes FROM 'Table'
-		WHERE UserID=? AND ProjectID=? ORDER BY Bytes DESC LIMIT ?`,
+
+	ifaces, err := dbmap.Select((*bqdb.Table)(nil),
+		"SELECT DatasetID, TableID, NumBytes FROM "+quotedTable+
+			" WHERE UserID=? AND ProjectID=? ORDER BY NumBytes DESC LIMIT ?",
 		userID, projectID, maxTopResults)
 	if err != nil {
 		return nil, err
+	}
+	data.TableStorage = make([]*templates.StorageUsage, len(ifaces))
+	for i, iface := range ifaces {
+		table := iface.(*bqdb.Table)
+		id := table.DatasetID + "." + table.TableID
+		data.TableStorage[i] = &templates.StorageUsage{ID: id, Bytes: table.NumBytes}
 	}
 
 	return data, nil
@@ -372,14 +374,38 @@ func (s *server) saveBigqueryTables(userID int64, tables []*bigquery.Table) erro
 }
 
 func main() {
+	sqlitePath := flag.String("sqlitePath", "", "If set, runs the server in localhost test mode")
+	cloudSQLProxy := flag.Bool("cloudSQLProxy", false, "If set, runs in localhost mode conecting to cloud SQL")
+	flag.Parse()
+
+	listenHostPost := ":8080"
+	redirectURL := productionHost + redirectPath
+	dbDriver := "mysql"
+	dbPath := "root@unix(/cloudsql/bigquery-tools:us-central1:bqcost-prod)/bqcost?interpolateParams=true"
+	var dialect gorp.Dialect = gorp.MySQLDialect{Engine: "InnoDB", Encoding: "UTF8"}
+	if *sqlitePath != "" || *cloudSQLProxy {
+		log.Printf("starting in local test mode")
+		listenHostPost = "localhost:8080"
+		redirectURL = "http://" + listenHostPost + redirectPath
+		if *sqlitePath != "" {
+			dbDriver = "sqlite3"
+			dbPath = *sqlitePath
+			dialect = gorp.SqliteDialect{}
+		} else {
+			dbPath = "root@cloudsql(bigquery-tools:us-central1:bqcost-prod)/bqcost?interpolateParams=true"
+		}
+	} else {
+		log.Printf("using production configuration")
+	}
+
 	securecookies := securecookie.New(cookieHashKey, cookieEncryptionKey)
-	auth, err := googlelogin.New(clientID, clientSecret, redirectURL,
+	auth, err := googlelogin.New(googleOAuthClientID, googleOAuthClientSecret, redirectURL,
 		[]string{bigquery.BigqueryScope + ".readonly"}, securecookies, "/noauth", http.DefaultServeMux)
 	if err != nil {
 		panic(err)
 	}
 
-	dbmap, err := bqdb.OpenAndCreateTablesIfNeeded("sqlite3", "test.sqlite", gorp.SqliteDialect{})
+	dbmap, err := bqdb.OpenAndCreateTablesIfNeeded(dbDriver, dbPath, dialect)
 	if err != nil {
 		panic(err)
 	}
@@ -394,10 +420,8 @@ func main() {
 
 	http.Handle("/projects/", auth.Handler(s.projectsHandler))
 
-	const hostport = "localhost:8080"
-	fmt.Printf("listening on http://%s/\n", hostport)
-
-	err = http.ListenAndServe(hostport, nil)
+	fmt.Printf("listening on http://%s/\n", listenHostPost)
+	err = http.ListenAndServe(listenHostPost, nil)
 	if err != nil {
 		panic(err)
 	}

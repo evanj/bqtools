@@ -2,6 +2,7 @@
 <html>
 <head>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 <title>BigQuery Tools: Cost visualization</title>
 </head>
 <body>
@@ -9,7 +10,7 @@
   <div class="hero-body">
     <div class="container">
       <h1 class="title is-1">BigQuery Tools</h1>
-      <h2 class="subtitle is-4">Instantly see which datasets, tables and queries cost the most</h2>
+      <h2 class="subtitle is-4">See which datasets, tables and queries cost the most</h2>
     </div>
   </div>
 </section>
@@ -18,7 +19,7 @@
   <div class="content is-medium container">
     <h1 class="title">Visualize BigQuery costs</h1>
     <p>
-    BigQuery Tools shows you what datasets and tables are taking up the most space. We created it for ourselves, but decided to release it for free in case others find it useful.
+    BigQuery Tools shows you what datasets and tables are taking up the most space, to help you understand your costs. Query cost analysis coming soon.
     </p>
   </div>
 </section>
@@ -27,6 +28,8 @@
   <div class="hero-body">
     <div class="container has-text-centered">
       <a href="/start" class="button is-primary is-large">Get Started</a>
+
+      <img src="">
     </div>
   </div>
 </section>
@@ -34,7 +37,7 @@
 <section class="section">
   <div class="content is-medium container">
     <h1 class="title">How it works</h1>
-    <p>BigQuery Tools requests temporary read-only access to BigQuery. It uses the <a href="https://cloud.google.com/bigquery/docs/reference/rest/v2/tables/get">BigQuery Table API</a> to get statistics for all tables in the project you selected. 
+    <p>BigQuery Tools requests temporary read-only access to BigQuery. It uses the <a href="https://cloud.google.com/bigquery/docs/reference/rest/v2/tables/get">BigQuery Table API</a> to get statistics for all tables in the project. It then calculates the aggregate storage usage, and shows a sorted list of the top tables. 
     </p>
 
     <hr>

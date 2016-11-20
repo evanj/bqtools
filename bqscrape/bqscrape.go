@@ -1,10 +1,10 @@
 package bqscrape
 
 import (
-	"context"
 	"fmt"
 	"log"
 
+	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 	"google.golang.org/api/bigquery/v2"
 )

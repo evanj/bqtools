@@ -1,11 +1,11 @@
 package bqscrape_test
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
 	"github.com/evanj/bqbackup/bqscrape"
+	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/bigquery/v2"
 )

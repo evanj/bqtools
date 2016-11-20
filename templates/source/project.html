@@ -3,6 +3,7 @@
 <html>
 <head>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.2.3/css/bulma.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
 <title>BigQuery Tools: {{template "DisplayProject" .}}</title>
 </head>
 <body>
@@ -58,7 +59,7 @@
             <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}%</td>
             <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
             <td style="text-align: right;">{{.HumanBytes}}</td>
-            <td><a href="https://bigquery.cloud.google.com/dataset/{{$projectID}}:{{.ID}}">{{.ID}}</a></td>
+            <td><i class="fa fa-database"></i> <a href="https://bigquery.cloud.google.com/dataset/{{$projectID}}:{{.ID}}">{{.ID}}</a></td>
           </tr>
           {{end}}
         </tbody>
@@ -87,7 +88,7 @@
             <td style="width: 20px; text-align: right;">{{.Percent $totalBytes}}%</td>
             <td style="text-align: right;">${{printf "%.2f" .DollarsPerMonth}}</td>
             <td style="text-align: right;">{{.HumanBytes}}</td>
-            <td><a href="https://bigquery.cloud.google.com/table/{{$projectID}}:{{.ID}}?tab=details">{{.ID}}</a></td>
+            <td><i class="fa fa-table"></i> <a href="https://bigquery.cloud.google.com/table/{{$projectID}}:{{.ID}}?tab=details">{{.ID}}</a></td>
           </tr>
           {{end}}
         </tbody>
@@ -95,7 +96,6 @@
     </div>
   </div>
 </div></section>
-
 
 </body>
 </html>
