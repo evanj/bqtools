@@ -92,7 +92,7 @@ type GorpGetter interface {
 	SelectOne(i interface{}, query string, args ...interface{}) error
 }
 
-// Returns nil, nil if there is no such user
+// Returns nil, nil if there is no such user (same as dbMap.Get()). TODO: Return err?
 func GetUserByAccessToken(getter GorpGetter, accessToken string) (*User, error) {
 	user := &User{}
 	err := getter.SelectOne(user, "SELECT * FROM User WHERE AccessToken=?", accessToken)
@@ -105,7 +105,7 @@ func GetUserByAccessToken(getter GorpGetter, accessToken string) (*User, error) 
 	return user, err
 }
 
-// Returns nil, nil if there is no such user
+// Returns nil, nil if there is no such user (same as dbMap.Get()). TODO: Return err?
 func GetUserByID(getter GorpGetter, userID int64) (*User, error) {
 	iface, err := getter.Get((*User)(nil), userID)
 	if err != nil {

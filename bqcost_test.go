@@ -256,6 +256,12 @@ func TestLoading(t *testing.T) {
 		t.Error(err)
 	}
 
+	// progress on a user that does not exist: don't crash
+	err = progressReport(dbmap, -5, 55, "foo message")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Error(err)
+	}
+
 	// correct progress
 	u.IsLoading = true
 	_, err = dbmap.Update(u)

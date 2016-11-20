@@ -285,9 +285,15 @@ func progressReport(dbmap *gorp.DbMap, userID int64, percent int, message string
 	}
 	defer txn.Rollback()
 
+	// race: scraping is started in a goroutine, then the transaction is committed
+	// by the time we read this, the user might not exist
 	u, err := bqdb.GetUserByID(txn, userID)
 	if err != nil {
 		return err
+	}
+	if u == nil {
+		// TODO: log and return nil? this is pretty harmless?
+		return fmt.Errorf("bqcost.progressReport: userID %d does not exist; retry later", userID)
 	}
 
 	if !u.IsLoading {
