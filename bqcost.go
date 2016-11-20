@@ -17,10 +17,10 @@ import (
 	"golang.org/x/oauth2"
 	bigquery "google.golang.org/api/bigquery/v2"
 
-	"github.com/evanj/bqbackup/bqdb"
-	"github.com/evanj/bqbackup/bqscrape"
-	"github.com/evanj/bqbackup/googlelogin"
-	"github.com/evanj/bqbackup/templates"
+	"github.com/evanj/bqtools/bqdb"
+	"github.com/evanj/bqtools/bqscrape"
+	"github.com/evanj/bqtools/googlelogin"
+	"github.com/evanj/bqtools/templates"
 )
 
 const redirectPath = "/oauth2callback"

@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/evanj/bqbackup/bqscrape"
+	"github.com/evanj/bqtools/bqscrape"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/bigquery/v2"

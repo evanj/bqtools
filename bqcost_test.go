@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evanj/bqbackup/bqdb"
-	"github.com/evanj/bqbackup/bqscrape"
+	"github.com/evanj/bqtools/bqdb"
+	"github.com/evanj/bqtools/bqscrape"
 	"github.com/go-gorp/gorp"
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/oauth2"
