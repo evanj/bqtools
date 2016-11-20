@@ -14,6 +14,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer dbmap.Db.Close()
 	user := &User{}
 	user.AccessToken = "foo"
 	err = dbmap.Insert(user)
@@ -60,5 +61,70 @@ func TestRegister(t *testing.T) {
 	u2, err = GetUserByAccessToken(dbmap, "does not exist")
 	if !(u2 == nil && err == nil) {
 		t.Error(u2, err)
+	}
+}
+
+func TestQuerySum(t *testing.T) {
+	// set up the database
+	dbmap, err := OpenAndCreateTablesIfNeeded("sqlite3", ":memory:", gorp.SqliteDialect{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbmap.Db.Close()
+
+	// does not exist: should return an error
+	count, err := QueryTotalTableBytes(dbmap, 42, "project")
+	if err == nil {
+		t.Error(count, err)
+	}
+
+	table := &Table{}
+	table.UserID = 42
+	table.ProjectID = "project"
+	table.TableID = "a"
+	table.NumBytes = 5
+	err = dbmap.Insert(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.TableID = "b"
+	table.NumBytes = 7
+	err = dbmap.Insert(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count, err = QueryTotalTableBytes(dbmap, 42, "project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 12 {
+		t.Error(count)
+	}
+}
+
+func TestQuotedTable(t *testing.T) {
+	// set up the database
+	dbmap, err := OpenAndCreateTablesIfNeeded("sqlite3", ":memory:", gorp.SqliteDialect{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbmap.Db.Close()
+
+	table, err := QuotedTableForQuery(dbmap, Table{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table != `"Table"` {
+		t.Error(table)
+	}
+
+	dbmap.Dialect = gorp.MySQLDialect{Engine: "InnoDB", Encoding: "UTF8"}
+	table, err = QuotedTableForQuery(dbmap, Table{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table != "`Table`" {
+		t.Error(table)
 	}
 }

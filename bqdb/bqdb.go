@@ -3,6 +3,7 @@ package bqdb
 import (
 	"database/sql"
 	"log"
+	"reflect"
 	"strings"
 
 	gorp "github.com/go-gorp/gorp"
@@ -76,7 +77,9 @@ func RegisterAndCreateTablesIfNeeded(dbmap *gorp.DbMap) error {
 	}
 	err = dbmap.CreateIndex()
 	// sqlite: index {{.Name}} already exists
-	if err != nil && strings.Contains(err.Error(), "already exists") {
+	// mysql: Duplicate key name '{{.Name}}'
+	if err != nil && (strings.Contains(err.Error(), "already exists") ||
+		strings.Contains(err.Error(), "Duplicate key name")) {
 		// assume this is probably index already exists
 		log.Printf("bqdb: warning: ignoring error indexes already exist: %s", err.Error())
 		return nil
@@ -113,4 +116,24 @@ func GetUserByID(getter GorpGetter, userID int64) (*User, error) {
 		u = iface.(*User)
 	}
 	return u, nil
+}
+
+func QuotedTableForQuery(dbmap *gorp.DbMap, i interface{}) (string, error) {
+	// TODO: cache the query?
+	tableMap, err := dbmap.TableFor(reflect.TypeOf(i), false)
+	if err != nil {
+		return "", err
+	}
+	return dbmap.Dialect.QuotedTableForQuery(tableMap.SchemaName, tableMap.TableName), nil
+}
+
+// TODO: Remove this? projectQuery already calls QuotedTableForQuery
+func QueryTotalTableBytes(dbmap *gorp.DbMap, userID int64, projectID string) (int64, error) {
+	quotedTable, err := QuotedTableForQuery(dbmap, Table{})
+	if err != nil {
+		return 0, err
+	}
+	query := "SELECT SUM(NumBytes) FROM " + quotedTable + " WHERE UserID=? AND ProjectID=?"
+
+	return dbmap.SelectInt(query, userID, projectID)
 }
