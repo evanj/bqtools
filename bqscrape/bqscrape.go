@@ -13,8 +13,8 @@ import (
 // https://cloud.google.com/bigquery/quota-policy#apirequests
 const requestPerSecondLimit = rate.Limit(50)
 const maxConcurrentAPIRequests = 10
-const maxDatasets = 100
-const maxTables = 5000
+const maxDatasets = 200
+const maxTables = 10000
 
 // https://cloud.google.com/bigquery/docs/data#paging-through-list-results
 const collectionMaxResults = 1000
@@ -131,14 +131,15 @@ func listAllTables(bqAPI api, projectId string, limiter *rate.Limiter) (
 	return tables, nil
 }
 
-// assume listing datasets and tables is 10% of the work
+// assume listing datasets and tables is 10%; saving is 1% (definitely wrong)
 const listTablesPercent = 10
+const savingPercent = 1
 const progressTableCount = 100
 
 func estimateListTablesProgress(tablesListed int, totalTables int) (int, string) {
 	fraction := float64(tablesListed) / float64(totalTables)
-	percent := listTablesPercent + int((100-listTablesPercent)*fraction+0.5)
-	message := fmt.Sprintf("Reading table metadata (completed %d/%d tables)",
+	percent := listTablesPercent + int((100-listTablesPercent-savingPercent)*fraction)
+	message := fmt.Sprintf("Reading table metadata: %d/%d tables",
 		tablesListed, totalTables)
 	return percent, message
 }
@@ -169,7 +170,8 @@ func getAllTables(bqAPI api, projectId string, limiter *rate.Limiter, progress P
 			return nil, err
 		}
 	}
-	progress.Progress(100, "Complete")
+	// TODO: factor this into the progress indicator better
+	progress.Progress(99, "Saving results...")
 	return tableData, nil
 }
 

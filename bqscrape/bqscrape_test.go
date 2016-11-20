@@ -192,8 +192,8 @@ func TestGetAllTables(t *testing.T) {
 
 	expected := []progressReport{
 		{0, "Listing tables..."},
-		{10, "Reading table metadata (completed 0/4 tables)"},
-		{100, "Complete"},
+		{10, "Reading table metadata: 0/4 tables"},
+		{99, "Saving results..."},
 	}
 	if !reflect.DeepEqual(expected, progress.progress) {
 		t.Error(progress.progress)
@@ -206,9 +206,9 @@ func TestEstimateProgress(t *testing.T) {
 		total  int
 		report progressReport
 	}{
-		{0, 100, progressReport{10, "Reading table metadata (completed 0/100 tables)"}},
-		{50, 100, progressReport{55, "Reading table metadata (completed 50/100 tables)"}},
-		{100, 100, progressReport{100, "Reading table metadata (completed 100/100 tables)"}},
+		{0, 100, progressReport{10, "Reading table metadata: 0/100 tables"}},
+		{50, 100, progressReport{54, "Reading table metadata: 50/100 tables"}},
+		{100, 100, progressReport{99, "Reading table metadata: 100/100 tables"}},
 	}
 
 	for i, test := range tests {
