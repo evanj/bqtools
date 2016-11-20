@@ -24,98 +24,116 @@ func newTestDB() *gorp.DbMap {
 	return dbmap
 }
 
+func countUsers(dbmap *gorp.DbMap, token *oauth2.Token) int64 {
+	count, err := dbmap.SelectInt("SELECT COUNT(*) FROM User WHERE AccessToken=?", token.AccessToken)
+	if err != nil {
+		panic(err)
+	}
+	return count
+}
+
 func TestGetUserOrStartLoading(t *testing.T) {
 	dbmap := newTestDB()
 	defer dbmap.Db.Close()
 
-	var loaderUser *bqdb.User
-	loaderProject := ""
-	loader := func(u *bqdb.User, projectID string) error {
+	var loaderUserID int64
+	loaderProjectID := ""
+	loader := func(userID int64, projectID string, accessToken string) error {
 		// loader should be called with an initialized user so we can use the id
-		if u.ID <= 0 {
-			return fmt.Errorf("user must have id set: %v", u)
+		if userID <= 0 {
+			return fmt.Errorf("userid must be set: %d", userID)
 		}
-		loaderUser = u
-		loaderProject = projectID
+		loaderUserID = userID
+		loaderProjectID = projectID
 		return nil
 	}
 
 	// creates a new user: returns errIsLoading but also the user
 	server := &server{nil, dbmap, loader}
 	token := &oauth2.Token{AccessToken: "fake_access_token"}
-	user, err := server.getUserOrStartLoading(token, "project")
-	if user == nil || err != errIsLoading || user.AccessToken != token.AccessToken {
-		t.Fatal(user, err)
+	userID, project, err := server.getProjectOrStartLoading(token, "project")
+	if userID <= 0 || project == nil || err != errIsLoading {
+		t.Fatal(userID, project, err)
 	}
-	if loaderUser.AccessToken != token.AccessToken || loaderUser.IsLoading != true || loaderUser.ID <= 0 {
-		t.Error(user)
+	if loaderUserID != userID || project.IsLoading != true {
+		t.Error(userID, project)
 	}
-	countUsers := func(token *oauth2.Token) int64 {
-		count, err := dbmap.SelectInt("SELECT COUNT(*) FROM User WHERE AccessToken=?", token.AccessToken)
-		if err != nil {
-			panic(err)
-		}
-		return count
-	}
-	if countUsers(token) != 1 {
+	if countUsers(dbmap, token) != 1 {
 		t.Error(token)
 	}
-	loadedID := loaderUser.ID
-	loaderUser = nil
+	loadedID := loaderUserID
+	loaderUserID = 0
 
-	// calling it again with the same token should not call loader, but should return user
-	user, err = server.getUserOrStartLoading(token, "project")
-	if user == nil || err != errIsLoading || user.AccessToken != token.AccessToken {
-		t.Fatal(user, err)
+	// calling it again with the same token should not call loader, but should return the project
+	userID, project, err = server.getProjectOrStartLoading(token, "project")
+	if userID <= 0 || project == nil || err != errIsLoading {
+		t.Fatal(userID, project, err)
 	}
-	if loaderUser != nil {
-		t.Error(loaderUser)
-	}
-
-	// calling with a different token, where loader returns an error should not insert anything
-	errLoading := errors.New("loading error")
-	server.startLoading = func(u *bqdb.User, projectID string) error {
-		loaderUser = u
-		return errLoading
-	}
-	otherToken := &oauth2.Token{AccessToken: "other token"}
-	user, err = server.getUserOrStartLoading(otherToken, "project")
-	if user != nil || err != errLoading {
-		t.Error(user, err)
-	}
-	if countUsers(otherToken) != 0 {
-		t.Error(otherToken)
-	}
-	otherID := loaderUser.ID
-	// finishing otherToken cannot work: was not inserted
-	err = server.finishLoading(otherID, nil)
-	if err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Error("expected does not exist error:", err)
+	if loaderUserID != 0 {
+		t.Error("calling twice should not have started loading:", loaderUserID)
 	}
 
-	// finish loading
-	err = server.finishLoading(loadedID, errors.New("some err"))
+	// finish loading with an error
+	err = server.finishLoading(loadedID, loaderProjectID, errors.New("some err"))
 	if err != nil {
 		panic(err)
 	}
-	user, err = bqdb.GetUserByID(dbmap, loadedID)
+	project, err = bqdb.GetProjectByID(dbmap, loadedID, loaderProjectID)
 	if err != nil {
 		t.Error(err)
 	}
-	if user.IsLoading || user.LoadingError != "some err" {
-		t.Error(user)
+	if project.IsLoading || project.LoadingError != "some err" {
+		t.Error(project)
 	}
 
 	// finishing loading again fails
-	err = server.finishLoading(loadedID, nil)
-	if err == nil {
+	err = server.finishLoading(loadedID, loaderProjectID, nil)
+	if err == nil || !strings.Contains(err.Error(), "finished loading") {
 		t.Error(err)
 	}
 
 	// calling getUser again gets the error
-	user, err = server.getUserOrStartLoading(token, "project")
-	if err == nil || err.Error() != "some err" {
-		t.Error("expected some err:", err)
+	userID, project, err = server.getProjectOrStartLoading(token, "project")
+	if !(userID == 0 && project == nil && err != nil && err.Error() == "some err") {
+		t.Error("expected some err:", userID, project, err)
+	}
+
+	// calling getProjectOrStartLoading with a different project causes that project to start
+	userID, project, err = server.getProjectOrStartLoading(token, "project2")
+	if !project.IsLoading || err != errIsLoading {
+		t.Error(userID, project, err)
+	}
+}
+
+func TestGetProjectOrStartLoadingError(t *testing.T) {
+	dbmap := newTestDB()
+	defer dbmap.Db.Close()
+
+	var loaderUserID int64
+	errLoading := errors.New("loading error")
+	loader := func(userID int64, projectID string, accessToken string) error {
+		loaderUserID = userID
+		return errLoading
+	}
+	server := &server{nil, dbmap, loader}
+
+	// when the loader returns an error, nothisg should be inserted
+	otherToken := &oauth2.Token{AccessToken: "other token"}
+	userID, project, err := server.getProjectOrStartLoading(otherToken, "project")
+	if !(userID == 0 && project == nil && err == errLoading) {
+		t.Error(userID, project, err)
+	}
+	if loaderUserID <= 0 {
+		t.Error("expected loading to be called")
+	}
+	if countUsers(dbmap, otherToken) != 0 {
+		t.Error(otherToken)
+	}
+
+	// finishing otherToken cannot work: was not inserted
+	err = server.finishLoading(loaderUserID, "project", nil)
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Error("expected does not exist error:", err)
 	}
 }
 
@@ -218,13 +236,14 @@ func TestProjectReport(t *testing.T) {
 
 	// TODO: Verify that rendering the template actually works
 	u := &bqdb.User{ID: 1, AccessToken: "token"}
-	err = dbmap.Insert(u)
+	p := &bqdb.Project{UserID: 1, ProjectID: table.ProjectID}
+	err = dbmap.Insert(u, p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := server{nil, dbmap, nil}
 	w := httptest.NewRecorder()
-	err = s.projectIndex(w, nil, &oauth2.Token{AccessToken: u.AccessToken}, "p")
+	err = s.projectIndex(w, nil, &oauth2.Token{AccessToken: u.AccessToken}, p.ProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,51 +258,50 @@ func TestLoading(t *testing.T) {
 	dbmap := newTestDB()
 	defer dbmap.Db.Close()
 
-	u := &bqdb.User{}
-	u.AccessToken = "token"
-	u.IsLoading = false
-	err := dbmap.Insert(u)
+	u := &bqdb.User{ID: 2}
+	p := &bqdb.Project{UserID: u.ID, ProjectID: "project"}
+	err := dbmap.Insert(u, p)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// progress on a user that is not loading: don't update
-	err = progressReport(dbmap, u.ID, 55, "foo message")
+	// progress on a project that is not loading: don't update
+	err = progressReport(dbmap, p.UserID, p.ProjectID, 55, "foo message")
 	if err == nil || !strings.Contains(err.Error(), "not loading") {
 		t.Error(err)
 	}
 
-	// progress on a user that does not exist: don't crash
-	err = progressReport(dbmap, -5, 55, "foo message")
+	// progress on a project that does not exist: don't crash
+	err = progressReport(dbmap, -5, p.ProjectID, 55, "foo message")
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Error(err)
 	}
 
 	// correct progress
-	u.IsLoading = true
-	_, err = dbmap.Update(u)
+	p.IsLoading = true
+	_, err = dbmap.Update(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = progressReport(dbmap, u.ID, 55, "foo message")
+	err = progressReport(dbmap, p.UserID, p.ProjectID, 55, "foo message")
 	if err != nil {
 		t.Error(err)
 	}
 
-	// re-read the user
-	u, err = bqdb.GetUserByID(dbmap, u.ID)
+	// re-read the project
+	p, err = bqdb.GetProjectByID(dbmap, p.UserID, p.ProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(u.LoadingPercent == 55 && u.LoadingMessage == "foo message") {
-		t.Error(u)
+	if !(p.LoadingPercent == 55 && p.LoadingMessage == "foo message") {
+		t.Error(p)
 	}
 
 	// projectIndex outputs the data
 	s := server{dbmap: dbmap}
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("GET", "/projects/foo", nil)
-	err = s.projectIndex(w, r, &oauth2.Token{AccessToken: "token"}, "foo")
+	r := httptest.NewRequest("GET", "/projects/"+p.ProjectID, nil)
+	err = s.projectIndex(w, r, &oauth2.Token{AccessToken: "token"}, p.ProjectID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,8 +312,4 @@ func TestLoading(t *testing.T) {
 
 // func TestEmptyProject(t *testing.T) {
 // 	t.Error("TODO: empty projects should work")
-// }
-
-// func TestMultipleProjects(t *testing.T) {
-// 	t.Error("TODO: switching projects should work")
 // }

@@ -10,25 +10,20 @@ import (
 )
 
 type User struct {
-	ID             int64  `db:",primarykey,autoincrement"`
-	AccessToken    string `db:",notnull"`
+	ID          int64  `db:",primarykey,autoincrement"`
+	AccessToken string `db:",notnull"`
+}
+
+type Project struct {
+	UserID       int64  `db:",notnull"`
+	ProjectID    string `db:",notnull"`
+	FriendlyName string `db:",notnull"`
+
 	IsLoading      bool   `db:",notnull"`
 	LoadingPercent int    `db:",notnull"`
 	LoadingMessage string `db:",notnull"`
 	LoadingError   string `db:",notnull"`
 }
-
-// type Project struct {
-// 	UserId       int64
-// 	Id           string
-// 	FriendlyName string `db:",notnull"`
-// }
-
-// type Dataset struct {
-// 	UserId    int64
-// 	ProjectId string
-// 	Id        string
-// }
 
 // https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#resource
 type Table struct {
@@ -68,8 +63,7 @@ func OpenAndCreateTablesIfNeeded(driver string, path string, dialect gorp.Dialec
 func RegisterAndCreateTablesIfNeeded(dbmap *gorp.DbMap) error {
 	dbmap.AddTable(User{}).
 		AddIndex("AccessTokenIndex", "", []string{"AccessToken"}).SetUnique(true)
-	// dbmap.AddTable(Project{}).SetKeys(false, "UserId", "Id")
-	// dbmap.AddTable(Dataset{}).SetKeys(false, "UserId", "ProjectId", "Id")
+	dbmap.AddTable(Project{}).SetKeys(false, "UserID", "ProjectID")
 	dbmap.AddTable(Table{}).SetKeys(false, "UserID", "ProjectID", "DatasetID", "TableID")
 	err := dbmap.CreateTablesIfNotExists()
 	if err != nil {
@@ -87,13 +81,8 @@ func RegisterAndCreateTablesIfNeeded(dbmap *gorp.DbMap) error {
 	return err
 }
 
-type GorpGetter interface {
-	Get(i interface{}, keys ...interface{}) (interface{}, error)
-	SelectOne(i interface{}, query string, args ...interface{}) error
-}
-
 // Returns nil, nil if there is no such user (same as dbMap.Get()). TODO: Return err?
-func GetUserByAccessToken(getter GorpGetter, accessToken string) (*User, error) {
+func GetUserByAccessToken(getter gorp.SqlExecutor, accessToken string) (*User, error) {
 	user := &User{}
 	err := getter.SelectOne(user, "SELECT * FROM User WHERE AccessToken=?", accessToken)
 	if err != nil {
@@ -106,7 +95,7 @@ func GetUserByAccessToken(getter GorpGetter, accessToken string) (*User, error) 
 }
 
 // Returns nil, nil if there is no such user (same as dbMap.Get()). TODO: Return err?
-func GetUserByID(getter GorpGetter, userID int64) (*User, error) {
+func GetUserByID(getter gorp.SqlExecutor, userID int64) (*User, error) {
 	iface, err := getter.Get((*User)(nil), userID)
 	if err != nil {
 		return nil, err
@@ -116,6 +105,19 @@ func GetUserByID(getter GorpGetter, userID int64) (*User, error) {
 		u = iface.(*User)
 	}
 	return u, nil
+}
+
+// Returns nil, nil if there is no such user (same as dbMap.Get()). TODO: Return err?
+func GetProjectByID(getter gorp.SqlExecutor, userID int64, projectID string) (*Project, error) {
+	iface, err := getter.Get((*Project)(nil), userID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	var p *Project
+	if iface != nil {
+		p = iface.(*Project)
+	}
+	return p, nil
 }
 
 func QuotedTableForQuery(dbmap *gorp.DbMap, i interface{}) (string, error) {
