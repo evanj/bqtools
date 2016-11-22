@@ -2,19 +2,29 @@ package bqscrape
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
+	"reflect"
+	"time"
+
+	"google.golang.org/api/gensupport"
 
 	"golang.org/x/net/context"
 	"golang.org/x/time/rate"
 	"google.golang.org/api/bigquery/v2"
+	"google.golang.org/api/googleapi"
 )
 
 // BigQuery permits 100 requests per second per user: use half at max
 // https://cloud.google.com/bigquery/quota-policy#apirequests
 const requestPerSecondLimit = rate.Limit(50)
 const maxConcurrentAPIRequests = 10
-const maxDatasets = 200
-const maxTables = 10000
+const maxDatasets = 500
+
+// In 1 hour of trying to read a project with 319598 tables: couldn't get past 40k
+const maxTables = 20000
 
 // https://cloud.google.com/bigquery/docs/data#paging-through-list-results
 const collectionMaxResults = 1000
@@ -35,29 +45,122 @@ type bigQueryAPI struct {
 
 func (a *bigQueryAPI) listDatasets(projectId string, pageToken string) (
 	*bigquery.DatasetList, error) {
-	// TODO: filter attributes? Set max results
-	return a.bq.Datasets.List(projectId).
+	// TODO: filter attributes?
+	request := a.bq.Datasets.List(projectId).
 		PageToken(pageToken).
-		MaxResults(collectionMaxResults).
-		Do()
+		MaxResults(collectionMaxResults)
+
+	var result *bigquery.DatasetList
+	makeRequest := func() error {
+		var err error
+		result, err = request.Do()
+		return err
+	}
+	err := retry(context.TODO(), makeRequest)
+	return result, err
 }
 
 func (a *bigQueryAPI) listTables(projectId string, datasetId string, pageToken string) (
 	*bigquery.TableList, error) {
-	// TODO: filter attributes? Set max results
-	return a.bq.Tables.List(projectId, datasetId).
+	// TODO: filter attributes?
+	request := a.bq.Tables.List(projectId, datasetId).
 		PageToken(pageToken).
-		MaxResults(collectionMaxResults).
-		Do()
+		MaxResults(collectionMaxResults)
+
+	var result *bigquery.TableList
+	makeRequest := func() error {
+		var err error
+		result, err = request.Do()
+		return err
+	}
+	err := retry(context.TODO(), makeRequest)
+	return result, err
 }
 
 func (a *bigQueryAPI) getTable(projectId string, datasetId string, tableId string) (
 	*bigquery.Table, error) {
-	// TODO: filter attributes?
-	return a.bq.Tables.Get(projectId, datasetId, tableId).
+	request := a.bq.Tables.Get(projectId, datasetId, tableId).
 		// created with the API fields editor
-		Fields("creationTime,description,expirationTime,friendlyName,id,kind,lastModifiedTime,numBytes,numLongTermBytes,numRows,streamingBuffer,tableReference,type").
-		Do()
+		Fields("creationTime,description,expirationTime,friendlyName,id,kind,lastModifiedTime,numBytes,numLongTermBytes,numRows,streamingBuffer,tableReference,type")
+
+	var result *bigquery.Table
+	makeRequest := func() error {
+		var err error
+		result, err = request.Do()
+		return err
+	}
+	err := retry(context.TODO(), makeRequest)
+	return result, err
+}
+
+var knownPermanent = map[string]int{
+	"accessDenied": http.StatusForbidden,
+}
+
+// Retries f until it hits a permanent error or times out. Based on gensupport.Retry
+func retry(ctx context.Context, f func() error) error {
+	// around 4 retries: 100, 200, 400, 800 = 1500 ms; expected value of each wait is half
+	// TODO: gensupport.ExponentialBackoff will wait one pause longer than the max time; do we care?
+	backoff := gensupport.ExponentialBackoff{
+		Base: 100 * time.Millisecond,
+		Max:  1 * time.Second,
+	}
+
+	for {
+		err := f()
+		if err == nil {
+			return nil
+		}
+
+		// Return the error if we shouldn't retry
+		pause, retry := backoff.Pause()
+		if !retry || isPermanentErr(err) {
+			return err
+		}
+
+		// Pause, but still listen to ctx.Done
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pause):
+		}
+	}
+}
+
+// Returns true if err is a permanent bigquery error. If it returns false, it means we aren't
+// sure, so it should be okay to retry. see the unit test for example errors we have hit.
+func isPermanentErr(err error) bool {
+	if apiErr, ok := err.(*googleapi.Error); ok {
+		firstReason := ""
+		if len(apiErr.Errors) > 0 {
+			firstReason = apiErr.Errors[0].Reason
+			if len(apiErr.Errors) > 1 {
+				reasons := []string{}
+				for _, detailedError := range apiErr.Errors {
+					reasons = append(reasons, detailedError.Reason)
+				}
+				log.Printf("bqscrape warning: found multiple reasons: %v error: %s", reasons, apiErr.Error())
+			}
+		} else {
+			log.Printf("bqscrape warning: found error without reasons: %s", apiErr.Error())
+		}
+		_, isPermanent := knownPermanent[firstReason]
+
+		log.Printf("bqscape: warning googleapi.Error: isPermanent: %v; reason: %s; %s",
+			isPermanent, firstReason, apiErr.Error())
+		return isPermanent
+	} else if urlErr, ok := err.(*url.Error); ok {
+		isPermanent := !(urlErr.Temporary() || urlErr.Err == io.ErrUnexpectedEOF)
+		log.Printf("bqscape: warning url.Error: isPermanent: %v; temporary: %v timeout: %v; %s",
+			isPermanent, urlErr.Temporary(), urlErr.Timeout(), urlErr.Error())
+		return isPermanent
+	}
+
+	// default to not permanent: it is safe but wasteful to "incorrectly" retry permanent errors;
+	// it is worse to incorrectly not retry a temporary error
+	log.Printf("bqscrape: warning isPermanentErr(type %s): unhandled: %s",
+		reflect.TypeOf(err).String(), err.Error())
+	return false
 }
 
 func listAllDatasets(bqAPI api, projectId string, limiter *rate.Limiter) (

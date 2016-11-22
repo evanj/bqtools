@@ -1,12 +1,18 @@
 package bqscrape
 
 import (
+	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
 	"testing"
 	"time"
+
+	"google.golang.org/api/googleapi"
 
 	"golang.org/x/time/rate"
 	"google.golang.org/api/bigquery/v2"
@@ -218,5 +224,113 @@ func TestEstimateProgress(t *testing.T) {
 			t.Errorf("%d: estimateListTablesProgress(%d, %d) = %v ; expected %v",
 				i, test.listed, test.total, report, test.report)
 		}
+	}
+}
+
+func TestIsPermanentErr(t *testing.T) {
+	// See https://cloud.google.com/bigquery/troubleshooting-errors
+	retriableErrors := []error{
+		&url.Error{Op: "GET", URL: "http://example.com/", Err: io.ErrUnexpectedEOF},
+		&googleapi.Error{Code: http.StatusBadGateway, Message: "TODO: real error",
+			Errors: []googleapi.ErrorItem{
+				googleapi.ErrorItem{Reason: "backendError", Message: "TODO: real error"}}},
+
+		// it is annoying that BigQuery re-uses HTTP status codes in this way
+		&googleapi.Error{Code: http.StatusForbidden, Message: "TODO: get real message",
+			Errors: []googleapi.ErrorItem{
+				googleapi.ErrorItem{Reason: "rateLimitExceeded", Message: "TODO: get real message"}}},
+
+		// have not seen error without items; but test it
+		&googleapi.Error{Code: http.StatusForbidden, Message: "error without items"},
+	}
+	permanentErrors := []error{
+		&googleapi.Error{Code: http.StatusForbidden, Message: "TODO: get real message",
+			Errors: []googleapi.ErrorItem{
+				googleapi.ErrorItem{Reason: "accessDenied", Message: "TODO: get real message"}}},
+
+		// never seen an error with multiple items, but test it
+		&googleapi.Error{Code: http.StatusForbidden, Message: "TODO: get real message",
+			Errors: []googleapi.ErrorItem{
+				googleapi.ErrorItem{Reason: "accessDenied", Message: "TODO: get real message"},
+				googleapi.ErrorItem{Reason: "backendError", Message: "ignored"}}},
+	}
+
+	for i, err := range retriableErrors {
+		if isPermanentErr(err) {
+			t.Errorf("%d: temporary error incorrectly marked permanent; type: %v message: %s",
+				i, reflect.TypeOf(err), err.Error())
+		}
+	}
+	for i, err := range permanentErrors {
+		if !isPermanentErr(err) {
+			t.Errorf("%d: permanent error incorrectly marked temporary: %v message: %s",
+				i, reflect.TypeOf(err), err.Error())
+		}
+	}
+}
+
+func TestRetry(t *testing.T) {
+	permanentErr := &googleapi.Error{Code: http.StatusForbidden, Message: "TODO: get real message",
+		Errors: []googleapi.ErrorItem{
+			googleapi.ErrorItem{Reason: "accessDenied", Message: "TODO: get real message"}}}
+	maybeTransientErr := errors.New("some unknown error")
+
+	// permanent errors are not retried
+	attempts := 0
+	task := func() error {
+		attempts += 1
+		return permanentErr
+	}
+	err := retry(context.Background(), task)
+	if err != permanentErr {
+		t.Error("should return permanentErr:", err)
+	}
+	if attempts != 1 {
+		t.Error("should not be retried")
+	}
+
+	// transient errors are retried until the time limit
+	attempts = 0
+	task = func() error {
+		attempts += 1
+		return maybeTransientErr
+	}
+	err = retry(context.Background(), task)
+	if err != maybeTransientErr {
+		t.Error("should return maybeTransientErr:", err)
+	}
+	if attempts <= 1 {
+		t.Error("should be retried", attempts)
+	}
+
+	// cancelling causes it to not wait
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts = 0
+	task = func() error {
+		attempts += 1
+		cancel()
+		return maybeTransientErr
+	}
+	err = retry(ctx, task)
+	if err != context.Canceled {
+		t.Error("should return cancelled:", err)
+	}
+	if attempts != 1 {
+		t.Error("should not be retried", attempts)
+	}
+
+	// expired context also does not retry
+	ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	attempts = 0
+	task = func() error {
+		attempts += 1
+		return maybeTransientErr
+	}
+	err = retry(ctx, task)
+	if err != context.DeadlineExceeded {
+		t.Error("should return deadline exceeded:", err)
+	}
+	if attempts != 1 {
+		t.Error("should not be retried", attempts)
 	}
 }
