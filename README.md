@@ -1,6 +1,6 @@
 # BigQuery Tools
 
-A useful tool to figure out what costs money in BigQuery. Also a bit of a personal experience in writing a complete web application in Go.
+A tool to figure out what costs money in a Google BigQuery project. Try it at https://bigquery-tools.appspot-preview.com/ Send feedback to ej@evanjones.ca.
 
 
 ## Deploying
@@ -10,16 +10,15 @@ A useful tool to figure out what costs money in BigQuery. Also a bit of a person
 2. Generate a secure cookie hash key: `openssl rand -hex 64` and encryption key: `openssl rand -hex 32`
 
 3. Save these values as constants in `credentials.go`:
+  ```
+  package main
 
-```
-package main
+  const googleOAuthClientID = "..."
+  const googleOAuthClientSecret = "..."
 
-const googleOAuthClientID = "..."
-const googleOAuthClientSecret = "..."
-
-var cookieHashKey = mustDecodeHex("...")
-var cookieEncryptionKey = mustDecodeHex("...")
-```
+  var cookieHashKey = mustDecodeHex("...")
+  var cookieEncryptionKey = mustDecodeHex("...")
+  ```
 
 4. Create a Cloud SQL instance. Edit bqcost.go and bqcost.yaml to reference the correct name.
 
